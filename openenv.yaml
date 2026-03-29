@@ -1,0 +1,106 @@
+name: prod-watchdog-env
+version: 0.1.0
+description: >
+  Production incident response environment. An AI agent acts as an on-call SRE,
+  diagnosing cascading microservice failures from noisy logs and metrics,
+  containing blast radius using circuit breakers, and remediating root causes.
+  Rewards partial progress and penalizes inefficient investigation.
+author: labwale
+created: 2026-03-29
+tags:
+  - openenv
+  - sre
+  - incident-response
+  - microservices
+  - real-world
+
+tasks:
+  - id: task1
+    name: Single Service Outage
+    difficulty: easy
+    description: >
+      order-service is down due to a bad deployment. Investigate logs/metrics,
+      identify the issue, rollback the deployment, and declare the incident resolved.
+    grader: grader_task1
+    max_steps: 10
+
+  - id: task2
+    name: Cascading Failure Diagnosis
+    difficulty: medium
+    description: >
+      auth-service CPU spike caused api-gateway to degrade. A red-herring alert
+      (notification-service high latency) is present. Find the root cause,
+      scale up auth-service, and resolve the cascade.
+    grader: grader_task2
+    max_steps: 15
+
+  - id: task3
+    name: Multi-Service Cascade with Noise
+    difficulty: hard
+    description: >
+      payment-service DB connection leak cascaded to notification-service (down)
+      and order-service (degraded). Two red-herring alerts exist. Must use
+      circuit breaker to contain blast radius, then fix payment-service.
+      Efficiency scoring rewards resolving in fewer steps.
+    grader: grader_task3
+    max_steps: 20
+
+action_space:
+  type: object
+  required:
+    - action_type
+  properties:
+    action_type:
+      type: string
+      description: "Type of action to take"
+      enum:
+        - query_logs
+        - check_metrics
+        - restart_service
+        - rollback_deploy
+        - enable_circuit_breaker
+        - scale_up
+        - declare_resolved
+    service:
+      type: string
+      description: "Target microservice"
+      enum:
+        - api-gateway
+        - auth-service
+        - order-service
+        - payment-service
+        - inventory-service
+        - notification-service
+    parameters:
+      type: object
+      description: "Optional extra parameters"
+
+observation_space:
+  type: object
+  properties:
+    alerts:
+      type: array
+      items:
+        type: string
+      description: "Active PagerDuty-style alerts"
+    service_health:
+      type: object
+      description: "Health status per service: healthy | degraded | down"
+    last_action_result:
+      type: string
+      description: "Output of the last action (logs, metrics, command output)"
+    step_count:
+      type: integer
+      description: "Number of steps taken in current episode"
+    available_actions:
+      type: array
+      items:
+        type: string
+      description: "Valid action_type values"
+
+reward_range:
+  min: -0.1
+  max: 0.5
+
+episode_length:
+  max: 20

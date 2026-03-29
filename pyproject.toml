@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openenv-prod-watchdog"
+version = "0.1.0"
+description = "Production incident response environment for OpenEnv"
+requires-python = ">=3.10"
+dependencies = [
+    "openenv-core>=0.2.1",
+    "openai>=1.0.0",
+    "httpx>=0.24.0",
+    "pydantic>=2.0.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.22.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+server = "prod_watchdog_env.server.app:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["prod_watchdog_env", "prod_watchdog_env.server"]
+package-dir = { "prod_watchdog_env" = ".", "prod_watchdog_env.server" = "server" }
