@@ -1,3 +1,15 @@
+---
+title: prod-watchdog-env
+emoji: 🚨
+colorFrom: red
+colorTo: orange
+sdk: docker
+app_port: 7860
+tags:
+  - openenv
+short_description: Production incident response SRE environment for OpenEnv
+---
+
 # ProdWatchdog — Production Incident Response Environment
 
 An OpenEnv environment that simulates real on-call SRE (Site Reliability Engineering) work.
