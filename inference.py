@@ -29,20 +29,23 @@ import json
 import os
 import re
 import time
-from typing import Optional
+from typing import Optional, List
 
 from openai import OpenAI
 
 from client import ProdWatchdogClient
+from dotenv import load_dotenv
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Config from environment variables
 # ---------------------------------------------------------------------------
 
-API_BASE_URL = os.environ.get("API_BASE_URL", "")
-MODEL_NAME   = os.environ.get("MODEL_NAME", "")
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME   = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.3-70B-Instruct")
 HF_TOKEN     = os.environ.get("HF_TOKEN", "")
 ENV_BASE_URL = os.environ.get("ENV_BASE_URL", "http://localhost:7860")
+BENCHMARK    = "prod-watchdog"
 
 SYSTEM_PROMPT = """You are an expert on-call Site Reliability Engineer (SRE).
 You are responding to a production incident affecting microservices.
@@ -75,6 +78,32 @@ Key reasoning rules:
 
 IMPORTANT: Respond ONLY with valid JSON in this exact format (no other text):
 {"action_type": "<action>", "service": "<service>"}"""
+
+
+# ---------------------------------------------------------------------------
+# Structured logging (per hackathon spec)
+# ---------------------------------------------------------------------------
+
+def log_start(task: str, model: str) -> None:
+    """Emit [START] line per spec."""
+    print(f"[START] task={task} env={BENCHMARK} model={model}", flush=True)
+
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    """Emit [STEP] line per spec."""
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
+
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    """Emit [END] line per spec."""
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    success_val = str(success).lower()
+    print(f"[END] success={success_val} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -150,12 +179,18 @@ def parse_action(response_text: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def _run_fallback_task(task_id: str, env_client: ProdWatchdogClient) -> float:
-    """Run the deterministic expert policy for a task. Always produces reproducible scores."""
-    print(f"  [FALLBACK] Using rule-based expert policy for {task_id}")
+    """Run deterministic expert policy. Emits structured [START], [STEP], [END] lines."""
+    rewards = []
+    steps_taken = 0
+    error_msg = None
+    
+    log_start(task=task_id, model="fallback-expert")
+    
     try:
         env_client.reset(task_id)
     except Exception as e:
-        print(f"  [ERROR] Fallback reset failed: {e}")
+        error_msg = str(e)
+        log_end(success=False, steps=0, score=0.0, rewards=[])
         return 0.0
 
     for i, action in enumerate(_FALLBACK_SEQUENCES.get(task_id, [])):
@@ -164,21 +199,33 @@ def _run_fallback_task(task_id: str, env_client: ProdWatchdogClient) -> float:
                 action["action_type"],
                 action.get("service"),
             )
-            print(
-                f"    fallback step {i+1}: "
-                f"{action['action_type']}({action.get('service', '')}) "
-                f"reward={reward:.2f}"
-            )
+            
+            # Format action_str per spec
+            action_str = f"{action['action_type']}('{action.get('service', '')}')"
+            
+            rewards.append(reward)
+            steps_taken = i + 1
+            error_msg = None
+            
+            log_step(step=steps_taken, action=action_str, reward=reward, done=done, error=error_msg)
+            
             if done:
                 break
         except Exception as e:
-            print(f"  [ERROR] Fallback step {i+1} failed: {e}")
+            error_msg = str(e)
+            action_str = f"{action['action_type']}('{action.get('service', '')}')"
+            log_step(step=i+1, action=action_str, reward=0.0, done=False, error=error_msg)
             break
 
     try:
-        return env_client.get_grader_score(task_id)
+        score = env_client.get_grader_score(task_id)
+        success = score >= 0.1  # threshold per spec
     except Exception:
-        return 0.0
+        score = 0.0
+        success = False
+
+    log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+    return score
 
 
 # ---------------------------------------------------------------------------
@@ -190,28 +237,33 @@ def run_task(
     llm_client: Optional[OpenAI],
     env_client: ProdWatchdogClient,
 ) -> float:
-    """Run the LLM agent on a single task. Falls back to rule-based if LLM fails."""
-    print(f"\n{'='*60}")
-    print(f"TASK: {task_id.upper()}")
-    print(f"{'='*60}")
-
+    """Run LLM agent on a single task. Emits [START], [STEP], [END] lines per spec."""
+    rewards = []
+    steps_taken = 0
+    
     if llm_client is None:
         return _run_fallback_task(task_id, env_client)
+    
+    log_start(task=task_id, model=MODEL_NAME)
 
     # Reset environment
     try:
         obs, done, _ = env_client.reset(task_id)
     except Exception as e:
-        print(f"[ERROR] Failed to reset env: {e}")
+        error_msg = str(e)
+        log_end(success=False, steps=0, score=0.0, rewards=[])
         return 0.0
-
-    print(f"Initial alerts: {obs.get('alerts', [])}")
 
     conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
     max_steps    = 20
     llm_failed   = False
+    score        = 0.0
+    success      = False
 
-    for step in range(max_steps):
+    for step in range(1, max_steps + 1):
+        if done:
+            break
+            
         user_msg = env_client.format_observation(obs)
         conversation.append({"role": "user", "content": user_msg})
 
@@ -225,44 +277,51 @@ def run_task(
             )
             assistant_text = response.choices[0].message.content
         except Exception as e:
-            print(f"  [WARN] LLM call failed: {e}. Switching to fallback policy.")
             llm_failed = True
-            break
+            error_msg = str(e)
+            log_end(success=False, steps=steps_taken, score=0.0, rewards=rewards)
+            # Fall back to deterministic policy
+            return _run_fallback_task(task_id, env_client)
 
         conversation.append({"role": "assistant", "content": assistant_text})
         action = parse_action(assistant_text)
 
-        action_type = action.get("action_type", "?")
-        service     = action.get("service", "?")
-        print(f"  Step {step+1}: {action_type}({service})")
+        action_type = action.get("action_type", "query_logs")
+        service     = action.get("service", "api-gateway")
+        action_str  = f"{action_type}('{service}')"
 
         # Execute action
+        error_msg = None
         try:
             obs, done, reward = env_client.step(
                 action_type,
-                service if service != "?" else None,
+                service,
             )
-            print(f"    reward={reward:.2f}  done={done}")
+            rewards.append(reward)
+            steps_taken = step
         except Exception as e:
-            print(f"  [ERROR] Step failed: {e}")
-            break
+            error_msg = str(e)
+            reward = 0.0
+            rewards.append(reward)
+            steps_taken = step
+
+        log_step(step=step, action=action_str, reward=reward, done=done, error=error_msg)
 
         if done:
-            print(f"  Episode ended at step {step+1}.")
             break
 
         time.sleep(0.5)  # rate limit buffer for HF free tier
 
-    if llm_failed:
-        return _run_fallback_task(task_id, env_client)
-
+    # Get grader score
     try:
         score = env_client.get_grader_score(task_id)
-        print(f"  Grader score: {score:.4f}")
-        return score
-    except Exception as e:
-        print(f"  [ERROR] Grader call failed: {e}")
-        return 0.0
+        success = score >= 0.1  # threshold per spec
+    except Exception:
+        score = 0.0
+        success = False
+
+    log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+    return score
 
 
 # ---------------------------------------------------------------------------
@@ -274,9 +333,8 @@ def run_all_tasks(env_url: str = ENV_BASE_URL) -> dict:
     llm_client = None
     try:
         llm_client = create_llm_client()
-        print(f"[INFO] LLM client ready: {MODEL_NAME} @ {API_BASE_URL}")
     except Exception as e:
-        print(f"[WARN] LLM unavailable ({e}). Using deterministic fallback policy.")
+        pass  # Will use fallback policy
 
     scores = {}
     with ProdWatchdogClient(env_url) as env_client:
@@ -285,28 +343,10 @@ def run_all_tasks(env_url: str = ENV_BASE_URL) -> dict:
                 score = run_task(task_id, llm_client, env_client)
                 scores[task_id] = score
             except Exception as e:
-                print(f"[ERROR] Task {task_id} failed: {e}")
                 scores[task_id] = 0.0
-
-    average = round(sum(scores.values()) / len(scores), 4)
-    scores["average"] = average
-
-    print(f"\n{'='*60}")
-    print("BASELINE SCORES")
-    print(f"{'='*60}")
-    for k, v in scores.items():
-        print(f"  {k}: {v:.4f}")
-    print(f"{'='*60}\n")
 
     return scores
 
 
 if __name__ == "__main__":
-    if not API_BASE_URL or not HF_TOKEN:
-        print("[WARN] API_BASE_URL / HF_TOKEN not set — running deterministic fallback policy.")
-        print("To use LLM agent:")
-        print("  export API_BASE_URL=https://router.huggingface.co/v1")
-        print("  export MODEL_NAME=meta-llama/Llama-3.3-70B-Instruct")
-        print("  export HF_TOKEN=hf_your_token_here")
-
     run_all_tasks()
