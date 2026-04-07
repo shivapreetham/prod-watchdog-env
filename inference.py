@@ -53,28 +53,36 @@ You are responding to a production incident affecting microservices.
 Your job:
 1. Investigate the incident using query_logs and check_metrics
 2. Identify the ROOT CAUSE service (not just a symptom)
-3. Take the correct remediation action
-4. If there is active cascade spread, use enable_circuit_breaker BEFORE fixing root
-5. Declare the incident resolved with declare_resolved once root is fixed
+3. Apply the correct remediation action
+4. For multi-step fixes: use enable_circuit_breaker first to contain blast radius, then fix root, then restart dependents
+5. Declare the incident resolved with declare_resolved once all critical services are healthy
 
-Available services: api-gateway, auth-service, order-service, payment-service, inventory-service, notification-service
+Available services:
+  nginx-lb, api-gateway, redis-cache, auth-service, order-service, payment-service,
+  inventory-service, notification-service, kafka-broker, postgres-primary, postgres-replica
 
 Available action types:
-- query_logs: Read logs for a specific service
-- check_metrics: Check CPU/memory/error metrics for a service
-- restart_service: Restart a service (fixes DB leaks, memory exhaustion)
-- rollback_deploy: Roll back the last deployment (fixes bad deploys)
-- enable_circuit_breaker: Isolate a service to stop cascade propagation
-- scale_up: Add more capacity (fixes CPU spikes, high load)
-- declare_resolved: End the episode when root cause is fixed
+- query_logs              : Read logs for a specific service
+- check_metrics           : Check CPU/memory/error metrics for a service
+- restart_service         : Restart a service (fixes broker failures, DB connection leaks, JVM heap)
+- rollback_deploy         : Roll back a deployment or restore from snapshot (fixes bad configs, disk-full DB)
+- enable_circuit_breaker  : Isolate a service to stop cascade propagation (use BEFORE fixing root when blast radius is growing)
+- scale_up                : Add more resources/instances (fixes OOM, CPU spikes, cache memory limits)
+- declare_resolved        : End the episode when root cause is fixed and cascade is contained
+- flush_cache             : Flush redis-cache eviction pressure (does NOT fix OOM — use scale_up for that)
+- promote_replica         : Promote postgres-replica to primary (only valid when primary is down and replica is NOT yet promoted)
+- rebalance_partitions    : Rebalance kafka partition leadership (requires kafka-broker to be running first)
 
-Key reasoning rules:
-- A service showing errors because its UPSTREAM is down = symptom, not root cause
-- High CPU + saturated instances = scale_up
-- Bad deployment (startup failure, missing config) = rollback_deploy
-- DB connection exhaustion, memory leak = restart_service
-- If a downstream service is in a crash loop due to upstream failures = circuit breaker first
-- Investigate the ROOT cause service, not just the loudest alert
+SRE reasoning rules:
+- ENTRY POINT first: if ALL services appear degraded, the load balancer (nginx-lb) is the most likely root
+- CACHE before gateway: api-gateway latency spikes with 0% cache hit rate → redis-cache OOM, not gateway issue
+- KAFKA symptoms: notification consumer lag + order-service memory growth → kafka-broker failure (check broker first)
+- DB replica vs primary: inventory failures → check postgres-replica; payment write failures → check postgres-primary
+- SPLIT-BRAIN: both postgres nodes in service_health but writes failing → postgres-primary disk full, replica promoted but still read-only → rollback_deploy(postgres-primary) restores it
+- JVM/heap leak: auth-service 90%+ memory + GC pauses causing latency → restart_service clears heap
+- Circuit breaker timing: use enable_circuit_breaker BEFORE restarting the root service when dependents are in retry storm
+- Downstream symptom: a service showing errors because its UPSTREAM dependency is broken is NOT the root cause
+- Do NOT scale_up api-gateway for auth timeout issues — the bottleneck is auth latency, not gateway capacity
 
 IMPORTANT: Respond ONLY with valid JSON in this exact format (no other text):
 {"action_type": "<action>", "service": "<service>"}"""
@@ -112,23 +120,38 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
 
 _FALLBACK_SEQUENCES = {
     "task1": [
-        {"action_type": "query_logs",       "service": "order-service"},
-        {"action_type": "check_metrics",    "service": "order-service"},
-        {"action_type": "rollback_deploy",  "service": "order-service"},
-        {"action_type": "declare_resolved", "service": "order-service"},
+        {"action_type": "query_logs",       "service": "redis-cache"},
+        {"action_type": "scale_up",         "service": "redis-cache"},
+        {"action_type": "declare_resolved", "service": "redis-cache"},
     ],
     "task2": [
-        {"action_type": "query_logs",       "service": "auth-service"},
-        {"action_type": "check_metrics",    "service": "auth-service"},
-        {"action_type": "scale_up",         "service": "auth-service"},
-        {"action_type": "declare_resolved", "service": "auth-service"},
+        {"action_type": "query_logs",       "service": "nginx-lb"},
+        {"action_type": "rollback_deploy",  "service": "nginx-lb"},
+        {"action_type": "declare_resolved", "service": "nginx-lb"},
     ],
     "task3": [
-        {"action_type": "query_logs",             "service": "payment-service"},
-        {"action_type": "check_metrics",          "service": "payment-service"},
-        {"action_type": "enable_circuit_breaker", "service": "notification-service"},
+        {"action_type": "query_logs",       "service": "kafka-broker"},
+        {"action_type": "restart_service",  "service": "kafka-broker"},
+        {"action_type": "declare_resolved", "service": "kafka-broker"},
+    ],
+    "task4": [
+        {"action_type": "query_logs",       "service": "postgres-replica"},
+        {"action_type": "restart_service",  "service": "postgres-replica"},
+        {"action_type": "declare_resolved", "service": "postgres-replica"},
+    ],
+    "task5": [
+        {"action_type": "query_logs",             "service": "auth-service"},
+        {"action_type": "enable_circuit_breaker", "service": "api-gateway"},
+        {"action_type": "restart_service",        "service": "auth-service"},
+        {"action_type": "declare_resolved",       "service": "auth-service"},
+    ],
+    "task6": [
+        {"action_type": "query_logs",             "service": "postgres-primary"},
+        {"action_type": "check_metrics",          "service": "postgres-primary"},
+        {"action_type": "enable_circuit_breaker", "service": "payment-service"},
+        {"action_type": "rollback_deploy",        "service": "postgres-primary"},
         {"action_type": "restart_service",        "service": "payment-service"},
-        {"action_type": "declare_resolved",       "service": "payment-service"},
+        {"action_type": "declare_resolved",       "service": "postgres-primary"},
     ],
 }
 
@@ -338,7 +361,7 @@ def run_all_tasks(env_url: str = ENV_BASE_URL) -> dict:
 
     scores = {}
     with ProdWatchdogClient(env_url) as env_client:
-        for task_id in ["task1", "task2", "task3"]:
+        for task_id in ["task1", "task2", "task3", "task4", "task5", "task6"]:
             try:
                 score = run_task(task_id, llm_client, env_client)
                 scores[task_id] = score
