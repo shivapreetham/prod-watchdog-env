@@ -272,7 +272,7 @@ def run_task(
             response = llm_client.chat.completions.create(
                 model=MODEL_NAME,
                 messages=conversation,
-                temperature=0.1,
+                temperature=0,
                 max_tokens=128,
             )
             assistant_text = response.choices[0].message.content
