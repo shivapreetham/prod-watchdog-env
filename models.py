@@ -17,15 +17,23 @@ VALID_ACTION_TYPES = [
     "enable_circuit_breaker",
     "scale_up",
     "declare_resolved",
+    "flush_cache",
+    "promote_replica",
+    "rebalance_partitions",
 ]
 
 VALID_SERVICES = [
+    "nginx-lb",
     "api-gateway",
+    "redis-cache",
     "auth-service",
     "order-service",
     "payment-service",
     "inventory-service",
     "notification-service",
+    "kafka-broker",
+    "postgres-primary",
+    "postgres-replica",
 ]
 
 
@@ -38,11 +46,14 @@ class ProdWatchdogAction(Action):
     action_type options:
       - query_logs: Read logs for a service to find error patterns
       - check_metrics: Check CPU/memory/latency metrics for a service
-      - restart_service: Restart a service (fixes DB leaks, memory issues)
-      - rollback_deploy: Rollback the latest deployment (fixes bad deploys)
+      - restart_service: Restart a service (fixes broker/DB-connection issues)
+      - rollback_deploy: Rollback deployment or restore from snapshot
       - enable_circuit_breaker: Isolate a service to stop cascade propagation
-      - scale_up: Add more instances (fixes CPU spikes, high load)
+      - scale_up: Add more resources/instances (fixes OOM, CPU spikes)
       - declare_resolved: End the episode and declare root cause fixed
+      - flush_cache: Flush redis-cache (clears eviction pressure; does NOT fix OOM)
+      - promote_replica: Promote postgres-replica to primary
+      - rebalance_partitions: Rebalance kafka partition leadership
     """
 
     action_type: str = Field(
