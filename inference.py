@@ -184,9 +184,12 @@ def create_groq_client() -> Optional[OpenAI]:
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
-    """Check if exception is a rate limit / quota error."""
+    """Check if exception is a rate limit / quota / billing error from the primary LLM."""
     msg = str(exc).lower()
-    return any(kw in msg for kw in ("429", "rate limit", "quota", "too many requests", "rate_limit"))
+    return any(kw in msg for kw in (
+        "429", "rate limit", "quota", "too many requests", "rate_limit",
+        "402", "credits", "depleted", "billing", "payment",
+    ))
 
 
 def call_llm_with_retry(
@@ -349,9 +352,11 @@ def run_task(
     if llm_client is None and groq_client is None:
         return _run_fallback_task(task_id, env_client)
 
-    # Determine which client/model to use (prefer primary HF, Groq as secondary)
-    active_client = llm_client if llm_client is not None else groq_client
-    active_model  = MODEL_NAME if llm_client is not None else GROQ_MODEL
+    # llm_client is the primary, groq_client is the secondary (callers set this up)
+    active_client = llm_client
+    active_model  = GROQ_MODEL if (llm_client is groq_client or llm_client is not None and llm_client is groq_client) else MODEL_NAME
+    # Simpler: detect by comparing to groq_client instance
+    active_model  = GROQ_MODEL if (active_client is groq_client and groq_client is not None) else MODEL_NAME
 
     log_start(task=task_id, model=active_model)
 
@@ -381,9 +386,9 @@ def run_task(
                 temperature=0, max_tokens=128,
             )
         except Exception as primary_exc:
-            if _is_rate_limit_error(primary_exc) and active_client is llm_client and groq_client is not None:
-                # Rate limited on primary — switch to Groq mid-task
-                print(f"  [FALLOVER] primary rate-limited, switching to Groq for task={task_id}", flush=True)
+            # Try Groq fallback whenever the primary (HF) fails — quota, billing, 402, 429, etc.
+            if active_client is not groq_client and groq_client is not None:
+                print(f"  [FALLOVER] primary error ({str(primary_exc)[:80]}), switching to Groq for task={task_id}", flush=True)
                 active_client = groq_client
                 active_model  = GROQ_MODEL
                 try:
@@ -392,12 +397,10 @@ def run_task(
                         temperature=0, max_tokens=128,
                     )
                 except Exception as groq_exc:
-                    # Groq also failed — go deterministic
                     print(f"  [FALLBACK] Groq also failed: {groq_exc}", flush=True)
                     log_end(success=False, steps=steps_taken, score=0.0, rewards=rewards)
                     return _run_fallback_task(task_id, env_client)
             else:
-                # Non-rate-limit error or no Groq available — go deterministic
                 print(f"  [FALLBACK] LLM error: {primary_exc}", flush=True)
                 log_end(success=False, steps=steps_taken, score=0.0, rewards=rewards)
                 return _run_fallback_task(task_id, env_client)
@@ -467,22 +470,25 @@ def run_all_tasks(env_url: str = ENV_BASE_URL) -> dict:
     except Exception:
         pass
 
-    if llm_client is None and groq_client is None:
+    # Prefer Groq as primary (generous free tier); HF as secondary
+    primary_client = groq_client if groq_client is not None else llm_client
+    secondary_client = llm_client if groq_client is not None else None
+    primary_model = GROQ_MODEL if groq_client is not None else MODEL_NAME
+
+    if primary_client is None:
         print("[INFO] No LLM credentials found — running deterministic expert policy", flush=True)
-    elif llm_client is None:
-        print(f"[INFO] Primary LLM unavailable — using Groq ({GROQ_MODEL}) as primary", flush=True)
     else:
-        print(f"[INFO] Primary LLM: {MODEL_NAME}", flush=True)
-        if groq_client:
-            print(f"[INFO] Groq fallback: {GROQ_MODEL}", flush=True)
+        print(f"[INFO] Primary LLM: {primary_model}", flush=True)
+        if secondary_client:
+            print(f"[INFO] Secondary LLM: {MODEL_NAME}", flush=True)
 
     scores = {}
     with ProdWatchdogClient(env_url) as env_client:
         for i, task_id in enumerate(["task1", "task2", "task3", "task4", "task5", "task6"]):
             if i > 0:
-                time.sleep(5)  # inter-task cooldown to avoid rate limits
+                time.sleep(2)  # inter-task cooldown
             try:
-                score = run_task(task_id, llm_client, groq_client, env_client)
+                score = run_task(task_id, primary_client, secondary_client, env_client)
                 scores[task_id] = score
             except Exception as e:
                 print(f"  [ERROR] task={task_id} error={e}", flush=True)
