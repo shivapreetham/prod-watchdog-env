@@ -340,23 +340,22 @@ def _should_auto_declare(task_id: str, obs) -> bool:
 
 
 def run_task(
-    task_id:     str,
-    llm_client:  Optional[OpenAI],
-    groq_client: Optional[OpenAI],
-    env_client:  ProdWatchdogClient,
+    task_id:       str,
+    llm_client:    Optional[OpenAI],
+    llm_model:     str,
+    backup_client: Optional[OpenAI],
+    backup_model:  str,
+    env_client:    ProdWatchdogClient,
 ) -> float:
-    """Run LLM agent on a single task. Falls back to Groq then expert if rate-limited."""
+    """Run LLM agent on a single task. Falls back to backup LLM then expert if rate-limited."""
     rewards = []
     steps_taken = 0
 
-    if llm_client is None and groq_client is None:
+    if llm_client is None:
         return _run_fallback_task(task_id, env_client)
 
-    # llm_client is the primary, groq_client is the secondary (callers set this up)
     active_client = llm_client
-    active_model  = GROQ_MODEL if (llm_client is groq_client or llm_client is not None and llm_client is groq_client) else MODEL_NAME
-    # Simpler: detect by comparing to groq_client instance
-    active_model  = GROQ_MODEL if (active_client is groq_client and groq_client is not None) else MODEL_NAME
+    active_model  = llm_model
 
     log_start(task=task_id, model=active_model)
 
@@ -386,18 +385,18 @@ def run_task(
                 temperature=0, max_tokens=128,
             )
         except Exception as primary_exc:
-            # Try Groq fallback whenever the primary (HF) fails — quota, billing, 402, 429, etc.
-            if active_client is not groq_client and groq_client is not None:
-                print(f"  [FALLOVER] primary error ({str(primary_exc)[:80]}), switching to Groq for task={task_id}", flush=True)
-                active_client = groq_client
-                active_model  = GROQ_MODEL
+            # Try backup LLM whenever primary fails
+            if active_client is llm_client and backup_client is not None:
+                print(f"  [FALLOVER] primary error ({str(primary_exc)[:80]}), switching to backup for task={task_id}", flush=True)
+                active_client = backup_client
+                active_model  = backup_model
                 try:
                     assistant_text = call_llm_with_retry(
                         active_client, active_model, conversation,
                         temperature=0, max_tokens=128,
                     )
-                except Exception as groq_exc:
-                    print(f"  [FALLBACK] Groq also failed: {groq_exc}", flush=True)
+                except Exception as backup_exc:
+                    print(f"  [FALLBACK] Backup LLM also failed: {backup_exc}", flush=True)
                     log_end(success=False, steps=steps_taken, score=0.0, rewards=rewards)
                     return _run_fallback_task(task_id, env_client)
             else:
@@ -471,16 +470,19 @@ def run_all_tasks(env_url: str = ENV_BASE_URL) -> dict:
         pass
 
     # Prefer Groq as primary (generous free tier); HF as secondary
-    primary_client = groq_client if groq_client is not None else llm_client
-    secondary_client = llm_client if groq_client is not None else None
-    primary_model = GROQ_MODEL if groq_client is not None else MODEL_NAME
+    if groq_client is not None:
+        primary_client, primary_model = groq_client, GROQ_MODEL
+        backup_client,  backup_model  = llm_client, MODEL_NAME
+    else:
+        primary_client, primary_model = llm_client, MODEL_NAME
+        backup_client,  backup_model  = None, ""
 
     if primary_client is None:
-        print("[INFO] No LLM credentials found — running deterministic expert policy", flush=True)
+        print("[INFO] No LLM credentials — running deterministic expert policy", flush=True)
     else:
         print(f"[INFO] Primary LLM: {primary_model}", flush=True)
-        if secondary_client:
-            print(f"[INFO] Secondary LLM: {MODEL_NAME}", flush=True)
+        if backup_client:
+            print(f"[INFO] Backup LLM:  {backup_model}", flush=True)
 
     scores = {}
     with ProdWatchdogClient(env_url) as env_client:
@@ -488,7 +490,7 @@ def run_all_tasks(env_url: str = ENV_BASE_URL) -> dict:
             if i > 0:
                 time.sleep(2)  # inter-task cooldown
             try:
-                score = run_task(task_id, primary_client, secondary_client, env_client)
+                score = run_task(task_id, primary_client, primary_model, backup_client, backup_model, env_client)
                 scores[task_id] = score
             except Exception as e:
                 print(f"  [ERROR] task={task_id} error={e}", flush=True)
