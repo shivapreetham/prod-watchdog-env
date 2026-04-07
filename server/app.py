@@ -81,14 +81,20 @@ def list_tasks():
         tasks.append({
             "id": task_id,
             "name": {
-                "task1": "Single Service Outage",
-                "task2": "Cascading Failure Diagnosis",
-                "task3": "Multi-Service Cascade with Noise",
+                "task1": "Redis Cache OOM — Thundering Herd",
+                "task2": "nginx-lb Bad Config Deploy",
+                "task3": "Kafka Broker Partition Failure",
+                "task4": "Postgres Replica WAL Corruption",
+                "task5": "Auth Service JWT Memory Leak",
+                "task6": "Postgres Primary Split-Brain",
             }.get(task_id, task_id),
             "difficulty": {
                 "task1": "easy",
-                "task2": "medium",
-                "task3": "hard",
+                "task2": "easy",
+                "task3": "medium",
+                "task4": "medium",
+                "task5": "medium-hard",
+                "task6": "hard",
             }.get(task_id, "unknown"),
             "description": scenario["description"],
             "max_steps": scenario["max_steps"],
@@ -107,6 +113,9 @@ def list_tasks():
                 "enable_circuit_breaker",
                 "scale_up",
                 "declare_resolved",
+                "flush_cache",
+                "promote_replica",
+                "rebalance_partitions",
             ],
         },
         "service": {
@@ -168,35 +177,52 @@ def run_baseline():
         SCENARIOS,
     )
 
+    # Hardcoded expert sequences per task (query root → CB if needed → fix → secondary fix → declare)
+    EXPERT_SEQUENCES = {
+        "task1": [
+            ("query_logs",           "redis-cache"),
+            ("scale_up",             "redis-cache"),
+            ("declare_resolved",     "redis-cache"),
+        ],
+        "task2": [
+            ("query_logs",           "nginx-lb"),
+            ("rollback_deploy",      "nginx-lb"),
+            ("declare_resolved",     "nginx-lb"),
+        ],
+        "task3": [
+            ("query_logs",           "kafka-broker"),
+            ("restart_service",      "kafka-broker"),
+            ("declare_resolved",     "kafka-broker"),
+        ],
+        "task4": [
+            ("query_logs",           "postgres-replica"),
+            ("restart_service",      "postgres-replica"),
+            ("declare_resolved",     "postgres-replica"),
+        ],
+        "task5": [
+            ("query_logs",           "auth-service"),
+            ("enable_circuit_breaker", "api-gateway"),
+            ("restart_service",      "auth-service"),
+            ("declare_resolved",     "auth-service"),
+        ],
+        "task6": [
+            ("query_logs",           "postgres-primary"),
+            ("check_metrics",        "postgres-primary"),
+            ("enable_circuit_breaker", "payment-service"),
+            ("rollback_deploy",      "postgres-primary"),
+            ("restart_service",      "payment-service"),
+            ("declare_resolved",     "postgres-primary"),
+        ],
+    }
+
     results = {}
 
-    for task_id in ["task1", "task2", "task3"]:
+    for task_id in TASK_GRADERS:
         env = ProdWatchdogEnvironment()
         env.reset(task_id=task_id)
 
-        scenario = SCENARIOS[task_id]
-        root_service = scenario["root_cause_service"]
-        fix_action = scenario["fix_action"]
-        cb_service = scenario.get("requires_circuit_breaker")
-
-        # Expert baseline policy: investigate, fix, declare
-        expert_actions = [
-            ProdWatchdogAction(action_type="query_logs", service=root_service),
-            ProdWatchdogAction(action_type="check_metrics", service=root_service),
-        ]
-        if cb_service:
-            expert_actions.append(
-                ProdWatchdogAction(action_type="enable_circuit_breaker", service=cb_service)
-            )
-        expert_actions.append(
-            ProdWatchdogAction(action_type=fix_action, service=root_service)
-        )
-        expert_actions.append(
-            ProdWatchdogAction(action_type="declare_resolved", service=root_service)
-        )
-
-        for action in expert_actions:
-            obs = env.step(action)
+        for action_type, service in EXPERT_SEQUENCES.get(task_id, []):
+            obs = env.step(ProdWatchdogAction(action_type=action_type, service=service))
             if obs.done:
                 break
 
