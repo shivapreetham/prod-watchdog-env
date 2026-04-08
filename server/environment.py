@@ -908,7 +908,6 @@ _EPISODE_STATE: dict = {
     "resolution_claim": None,
     "episode_id":       None,
     "primary_fixed":    False,   # task6 state machine: postgres-primary restored?
-    "log_cursor": {},
 }
 
 
@@ -1019,7 +1018,6 @@ class ProdWatchdogEnvironment(Environment):
         _EPISODE_STATE["resolution_claim"] = None
         _EPISODE_STATE["episode_id"]       = ep_id
         _EPISODE_STATE["primary_fixed"]    = False
-        _EPISODE_STATE["log_cursor"] = {}
 
         self._state = State(episode_id=ep_id, step_count=0)
         alerts = _compute_alerts(scenario, _EPISODE_STATE["service_health"])
@@ -1142,8 +1140,6 @@ def _process_action(
     root_service = scenario["root_cause_service"]
     fix_action   = scenario["fix_action"]
     task_id      = _EPISODE_STATE["task_id"]
-
-    max_steps = scenario["max_steps"]
 
     # ---- QUERY LOGS ----
     if action_type == "query_logs":
@@ -1395,7 +1391,7 @@ def _heal_downstream(service: str, health: dict, circuit_breakers: list):
 
 
 # ---------------------------------------------------------------------------
-# Dynamic log/metrics enrichment — observations change with incident state
+# Task graders — deterministic, scores vary 0.10–1.00 based on agent quality
 # ---------------------------------------------------------------------------
 
 _URGENCY_PREFIXES = [
@@ -1523,6 +1519,7 @@ def _mutate_log(base_log: str, service: str, step: int, health: dict, scenario: 
 
 
 def _get_log_slice(service: str, full_log: str, chunk_size: int = 4) -> str:
+def _get_log_slice(service: str, full_log: str, chunk_size: int = 4) -> str:
     """
     Return only new log lines (like tail -f).
     """
@@ -1536,6 +1533,7 @@ def _get_log_slice(service: str, full_log: str, chunk_size: int = 4) -> str:
 # ---------------------------------------------------------------------------
 # Task graders — deterministic, scores vary 0.05–0.99 based on agent quality
 # ---------------------------------------------------------------------------
+
 
 def grader_task1(episode_history: list) -> float:
     """
