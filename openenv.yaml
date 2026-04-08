@@ -20,7 +20,7 @@ tags:
 tasks:
   - id: task1
     name: Redis Cache OOM — Thundering Herd
-    difficulty: easy
+    difficulty: medium
     description: >
       redis-cache has hit memory OOM (100% utilization), causing 100% cache miss rate.
       Every request hits the DB directly (thundering herd). api-gateway shows high error rate
@@ -42,7 +42,7 @@ tasks:
 
   - id: task3
     name: Kafka Broker Partition Failure
-    difficulty: medium
+    difficulty: easy
     description: >
       kafka-broker partition leader election failed after a 47s JVM GC pause (broker fenced).
       order-service producer times out silently (orders queued locally, memory growing).
@@ -54,7 +54,7 @@ tasks:
 
   - id: task4
     name: Postgres Replica WAL Corruption
-    difficulty: medium
+    difficulty: hard
     description: >
       postgres-replica has a corrupted WAL segment after an OS-level force stop.
       inventory-service reads are all failing. order-service cannot verify stock availability.
@@ -65,7 +65,7 @@ tasks:
 
   - id: task5
     name: Auth Service JWT Memory Leak
-    difficulty: medium-hard
+    difficulty: medium
     description: >
       auth-service has a 7-day JWT validation cache memory leak — JVM heap at 96%.
       GC pauses causing 4s latency spikes. api-gateway retry storm (34% error rate, CPU 78%).

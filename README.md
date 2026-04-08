@@ -89,7 +89,7 @@ breakers are applied. Agents must identify the root cause, not just treat sympto
 
 ## Tasks
 
-### Task 1 — Easy: Redis Cache OOM — Thundering Herd
+### Task 1 — Medium: Redis Cache OOM — Thundering Herd
 - **Scenario:** `redis-cache` has hit memory OOM (100% utilization), causing 100% cache miss rate. Every request hits the DB directly. `api-gateway` shows high error rate — a downstream symptom. If not fixed by step 6, `nginx-lb` starts dropping connections.
 - **Fix:** `scale_up(redis-cache)`
 - **Max steps:** 12
@@ -101,19 +101,19 @@ breakers are applied. Agents must identify the root cause, not just treat sympto
 - **Max steps:** 10
 - **Grader:** `diagnosed_lb(0.30) + first_inv_quality(0.20) + fix(0.30) + final_state(0.20)`
 
-### Task 3 — Medium: Kafka Broker Partition Failure
+### Task 3 — Easy: Kafka Broker Partition Failure
 - **Scenario:** `kafka-broker` partition leader election failed after a 47s JVM GC pause. `order-service` producer times out silently (orders queuing in memory). `notification-service` consumer group is stuck with 847k undelivered messages. Red herrings: notification consumer lag looks primary, order memory spike looks like a leak. Cascade: order crashes at step 8, notification crashes at step 12.
 - **Fix:** `restart_service(kafka-broker)`
 - **Max steps:** 15
 - **Grader:** `diagnosed_kafka(0.20) + inv_speed(0.15) + fix(0.30) + final_state(0.20) + efficiency(0.15)`
 
-### Task 4 — Medium: Postgres Replica WAL Corruption
+### Task 4 — Hard: Postgres Replica WAL Corruption
 - **Scenario:** `postgres-replica` has a corrupted WAL segment after an OS-level force stop. `inventory-service` reads are all failing. `order-service` cannot verify stock availability. Red herring: `order-service` error rate looks like the root.
 - **Fix:** `restart_service(postgres-replica)`
 - **Max steps:** 15
 - **Grader:** `diagnosed_replica(0.25) + right_track_first(0.15) + fix(0.30) + final_state(0.20) + efficiency(0.10)`
 
-### Task 5 — Medium-Hard: Auth Service JWT Memory Leak
+### Task 5 — Medium: Auth Service JWT Memory Leak
 - **Scenario:** `auth-service` JWT validation cache has a 7-day memory leak, causing GC pauses and latency spikes. `api-gateway`, `order-service`, and `payment-service` are all showing auth failures. Red herrings: `redis-cache` latency looks suspicious, `payment-service` error rate looks like the root.
 - **Fix:** `enable_circuit_breaker(api-gateway)` → `restart_service(auth-service)`
 - **Max steps:** 20
@@ -160,11 +160,11 @@ The expert policy investigates the root cause service, applies the correct fix s
 
 | Task   | Difficulty    | Score  | Steps |
 |--------|---------------|--------|-------|
-| task1  | easy          | 0.9900 | 3     |
+| task1  | medium        | 0.9900 | 3     |
 | task2  | easy          | 0.9900 | 3     |
-| task3  | medium        | 0.9900 | 3     |
-| task4  | medium        | 0.9900 | 3     |
-| task5  | medium-hard   | 0.9900 | 4     |
+| task3  | easy          | 0.9900 | 3     |
+| task4  | hard          | 0.9900 | 3     |
+| task5  | medium        | 0.9900 | 4     |
 | task6  | hard          | 0.9900 | 6     |
 
 ---
