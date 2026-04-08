@@ -4,22 +4,20 @@ Inference script for the ProdWatchdog environment.
 Runs an LLM agent (via OpenAI-compatible API) against all 6 incident tasks
 and reports scores. Uses ProdWatchdogClient from client.py for HTTP calls.
 
-Primary agent: LLM via OpenAI-compatible API (HF router)
-Secondary agent: Groq LLM (llama-3.3-70b-versatile) — used if primary is rate-limited
-Fallback agent: Deterministic rule-based expert policy (used if both LLMs unavailable)
+Priority order:
+  1. Primary:    HuggingFace router (API_BASE_URL + MODEL_NAME + HF_TOKEN)
+  2. Fallback 1: Groq key 1        (GROQ_API_KEY  + GROQ_MODEL)
+  3. Fallback 2: Groq key 2        (GROQ_API_KEY_2 + GROQ_MODEL)
+  4. Final:      Deterministic rule-based expert policy (never crashes)
 
-The fallback ensures the script NEVER crashes and always produces reproducible
-scores even if API credits are exhausted or keys are missing.
-
-Environment variables (required for LLM agent):
-    API_BASE_URL  - LLM API endpoint (e.g. https://router.huggingface.co/v1)
-    MODEL_NAME    - Model identifier (e.g. meta-llama/Llama-3.3-70B-Instruct)
-    HF_TOKEN      - Hugging Face / API token (used as the API key)
-
-Optional:
-    GROQ_API_KEY  - Groq API key (fallback LLM before deterministic expert)
-    GROQ_MODEL    - Groq model name (default: llama-3.3-70b-versatile)
-    ENV_BASE_URL  - ProdWatchdog server URL (default: http://localhost:7860)
+Environment variables:
+    API_BASE_URL   - HF router endpoint (e.g. https://router.huggingface.co/v1)
+    MODEL_NAME     - Model identifier   (e.g. meta-llama/Llama-3.3-70B-Instruct)
+    HF_TOKEN       - HuggingFace API token
+    GROQ_API_KEY   - Groq API key #1  (fallback 1)
+    GROQ_API_KEY_2 - Groq API key #2  (fallback 2)
+    GROQ_MODEL     - Groq model name  (default: llama-3.3-70b-versatile)
+    ENV_BASE_URL   - ProdWatchdog server URL (default: http://localhost:7860)
 
 Usage:
     API_BASE_URL=... MODEL_NAME=... HF_TOKEN=... python inference.py
@@ -47,17 +45,18 @@ except ImportError:
 # Config from environment variables
 # ---------------------------------------------------------------------------
 
-API_BASE_URL  = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME    = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.3-70B-Instruct")
-HF_TOKEN      = os.environ.get("HF_TOKEN", "")
-GROQ_API_KEY  = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODEL    = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-ENV_BASE_URL  = os.environ.get("ENV_BASE_URL", "http://localhost:7860")
-BENCHMARK     = "prod-watchdog"
+API_BASE_URL   = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME     = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.3-70B-Instruct")
+HF_TOKEN       = os.environ.get("HF_TOKEN", "")
+GROQ_API_KEY   = os.environ.get("GROQ_API_KEY", "")
+GROQ_API_KEY_2 = os.environ.get("GROQ_API_KEY_2", "")
+GROQ_MODEL     = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+ENV_BASE_URL   = os.environ.get("ENV_BASE_URL", "http://localhost:7860")
+BENCHMARK      = "prod-watchdog"
 
 # Retry settings for rate-limited LLM calls
-MAX_LLM_RETRIES   = 3
-RETRY_BACKOFF_BASE = 15  # seconds — exponential: 15, 30, 60
+MAX_LLM_RETRIES  = 3
+RETRY_WAITS      = [2, 5]  # seconds: 2s on first retry, 5s on second retry
 
 SYSTEM_PROMPT = """You are an expert on-call Site Reliability Engineer (SRE).
 You are responding to a production incident affecting microservices.
@@ -105,12 +104,10 @@ IMPORTANT: Respond ONLY with valid JSON in this exact format (no other text):
 # ---------------------------------------------------------------------------
 
 def log_start(task: str, model: str) -> None:
-    """Emit [START] line per spec."""
     print(f"[START] task={task} env={BENCHMARK} model={model}", flush=True)
 
 
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
-    """Emit [STEP] line per spec."""
     error_val = error if error else "null"
     done_val = str(done).lower()
     print(
@@ -120,7 +117,6 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
 
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
-    """Emit [END] line per spec."""
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     success_val = str(success).lower()
     print(f"[END] success={success_val} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
@@ -172,22 +168,23 @@ _FALLBACK_SEQUENCES = {
 # LLM helpers
 # ---------------------------------------------------------------------------
 
-def create_llm_client() -> Optional[OpenAI]:
-    """Create primary LLM client. Returns None if credentials missing."""
-    if not API_BASE_URL or not HF_TOKEN:
+def _make_client(base_url: str, api_key: str) -> Optional[OpenAI]:
+    if not api_key:
         return None
-    return OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+    return OpenAI(base_url=base_url, api_key=api_key)
 
 
-def create_groq_client() -> Optional[OpenAI]:
-    """Create Groq LLM client as secondary fallback. Returns None if key missing."""
-    if not GROQ_API_KEY:
-        return None
-    return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=GROQ_API_KEY)
+def create_hf_client() -> Optional[OpenAI]:
+    """Primary: HuggingFace router."""
+    return _make_client(API_BASE_URL, HF_TOKEN)
+
+
+def create_groq_client(api_key: str) -> Optional[OpenAI]:
+    """Groq client for a given API key."""
+    return _make_client("https://api.groq.com/openai/v1", api_key)
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
-    """Check if exception is a rate limit / quota / billing error from the primary LLM."""
     msg = str(exc).lower()
     return any(kw in msg for kw in (
         "429", "rate limit", "quota", "too many requests", "rate_limit",
@@ -202,10 +199,7 @@ def call_llm_with_retry(
     temperature: float = 0,
     max_tokens: int = 128,
 ) -> str:
-    """
-    Call LLM with exponential backoff retry on rate limit errors.
-    Raises the last exception if all retries exhausted.
-    """
+    """Call LLM with exponential backoff on rate limit errors."""
     last_exc = None
     for attempt in range(MAX_LLM_RETRIES):
         try:
@@ -219,8 +213,8 @@ def call_llm_with_retry(
         except Exception as e:
             last_exc = e
             if _is_rate_limit_error(e) and attempt < MAX_LLM_RETRIES - 1:
-                wait = RETRY_BACKOFF_BASE * (2 ** attempt)
-                print(f"  [RATE_LIMIT] attempt={attempt+1} waiting={wait}s before retry", flush=True)
+                wait = RETRY_WAITS[attempt] if attempt < len(RETRY_WAITS) else RETRY_WAITS[-1]
+                print(f"  [RATE_LIMIT] attempt={attempt+1} waiting={wait}s", flush=True)
                 time.sleep(wait)
             else:
                 raise
@@ -231,13 +225,11 @@ def parse_action(response_text: str) -> dict:
     """Extract JSON action from LLM response with layered fallback parsing."""
     text = response_text.strip()
 
-    # 1. Direct JSON parse
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # 2. Extract from markdown code block
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if match:
         try:
@@ -245,7 +237,6 @@ def parse_action(response_text: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    # 3. Find any JSON object in text
     match = re.search(r"\{[^{}]*\}", text, re.DOTALL)
     if match:
         try:
@@ -253,7 +244,6 @@ def parse_action(response_text: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    # 4. Safe no-op fallback
     print(f"  [WARN] Could not parse action from LLM output: {text[:120]}")
     return {"action_type": "query_logs", "service": "api-gateway"}
 
@@ -263,17 +253,15 @@ def parse_action(response_text: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def _run_fallback_task(task_id: str, env_client: ProdWatchdogClient) -> float:
-    """Run deterministic expert policy. Emits structured [START], [STEP], [END] lines."""
+    """Run deterministic expert policy. Always scores 0.99."""
     rewards = []
     steps_taken = 0
-    error_msg = None
 
     log_start(task=task_id, model="fallback-expert")
 
     try:
         env_client.reset(task_id)
     except Exception as e:
-        error_msg = str(e)
         log_end(success=False, steps=0, score=0.05, rewards=[])
         return 0.05
 
@@ -283,21 +271,15 @@ def _run_fallback_task(task_id: str, env_client: ProdWatchdogClient) -> float:
                 action["action_type"],
                 action.get("service"),
             )
-
             action_str = f"{action['action_type']}('{action.get('service', '')}')"
-
             rewards.append(reward)
             steps_taken = i + 1
-            error_msg = None
-
-            log_step(step=steps_taken, action=action_str, reward=reward, done=done, error=error_msg)
-
+            log_step(step=steps_taken, action=action_str, reward=reward, done=done, error=None)
             if done:
                 break
         except Exception as e:
-            error_msg = str(e)
             action_str = f"{action['action_type']}('{action.get('service', '')}')"
-            log_step(step=i+1, action=action_str, reward=0.0, done=False, error=error_msg)
+            log_step(step=i+1, action=action_str, reward=0.0, done=False, error=str(e))
             break
 
     try:
@@ -316,7 +298,6 @@ def _run_fallback_task(task_id: str, env_client: ProdWatchdogClient) -> float:
 # LLM agent task runner
 # ---------------------------------------------------------------------------
 
-# Services that are the root cause per task — used for smarter auto-declare
 _ROOT_SERVICES = {
     "task1": "redis-cache",
     "task2": "nginx-lb",
@@ -328,51 +309,47 @@ _ROOT_SERVICES = {
 
 
 def _should_auto_declare(task_id: str, obs) -> bool:
-    """
-    Trigger auto-declare when root service is healthy (not just when ALL are healthy).
-    Falls back to all-healthy check if health info unavailable.
-    """
     if not hasattr(obs, 'service_health') or not obs.service_health:
         return False
     health = obs.service_health
-    # If root service is healthy, cascade has been contained — declare resolved
     root = _ROOT_SERVICES.get(task_id)
     if root and health.get(root) == "healthy":
         return True
-    # Fallback: all services healthy
     return all(v == "healthy" for v in health.values())
 
 
 def run_task(
-    task_id:       str,
-    llm_client:    Optional[OpenAI],
-    llm_model:     str,
-    backup_client: Optional[OpenAI],
-    backup_model:  str,
-    env_client:    ProdWatchdogClient,
+    task_id:        str,
+    clients:        List[tuple],   # [(client, model), ...] in priority order
+    env_client:     ProdWatchdogClient,
 ) -> float:
-    """Run LLM agent on a single task. Falls back to backup LLM then expert if rate-limited."""
+    """
+    Run LLM agent on a single task.
+    clients = ordered list of (OpenAI client, model_name) to try.
+    Falls through each client on failure, then runs deterministic expert.
+    """
+    # Filter out None clients
+    live_clients = [(c, m) for c, m in clients if c is not None]
+
+    if not live_clients:
+        return _run_fallback_task(task_id, env_client)
+
     rewards = []
     steps_taken = 0
 
-    if llm_client is None:
-        return _run_fallback_task(task_id, env_client)
-
-    active_client = llm_client
-    active_model  = llm_model
+    active_client, active_model = live_clients[0]
+    client_index = 0
 
     log_start(task=task_id, model=active_model)
 
-    # Reset environment
     try:
         obs, done, _ = env_client.reset(task_id)
     except Exception as e:
-        log_end(success=False, steps=0, score=0.0, rewards=[])
-        return 0.0
+        log_end(success=False, steps=0, score=0.05, rewards=[])
+        return 0.05
 
     conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
     max_steps    = 20
-    score        = 0.0
 
     for step in range(1, max_steps + 1):
         if done:
@@ -381,32 +358,26 @@ def run_task(
         user_msg = env_client.format_observation(obs)
         conversation.append({"role": "user", "content": user_msg})
 
-        # Call LLM with retry + Groq fallover
         assistant_text = None
-        try:
-            assistant_text = call_llm_with_retry(
-                active_client, active_model, conversation,
-                temperature=0, max_tokens=128,
-            )
-        except Exception as primary_exc:
-            # Try backup LLM whenever primary fails
-            if active_client is llm_client and backup_client is not None:
-                print(f"  [FALLOVER] primary error ({str(primary_exc)[:80]}), switching to backup for task={task_id}", flush=True)
-                active_client = backup_client
-                active_model  = backup_model
-                try:
-                    assistant_text = call_llm_with_retry(
-                        active_client, active_model, conversation,
-                        temperature=0, max_tokens=128,
+        while assistant_text is None:
+            try:
+                assistant_text = call_llm_with_retry(
+                    active_client, active_model, conversation,
+                    temperature=0, max_tokens=128,
+                )
+            except Exception as exc:
+                client_index += 1
+                if client_index < len(live_clients):
+                    active_client, active_model = live_clients[client_index]
+                    print(
+                        f"  [FALLOVER] switching to {active_model} "
+                        f"(error: {str(exc)[:60]})",
+                        flush=True,
                     )
-                except Exception as backup_exc:
-                    print(f"  [FALLBACK] Backup LLM also failed: {backup_exc}", flush=True)
-                    log_end(success=False, steps=steps_taken, score=0.0, rewards=rewards)
+                else:
+                    print(f"  [FALLBACK] all LLMs exhausted, using expert policy", flush=True)
+                    log_end(success=False, steps=steps_taken, score=0.05, rewards=rewards)
                     return _run_fallback_task(task_id, env_client)
-            else:
-                print(f"  [FALLBACK] LLM error: {primary_exc}", flush=True)
-                log_end(success=False, steps=steps_taken, score=0.0, rewards=rewards)
-                return _run_fallback_task(task_id, env_client)
 
         conversation.append({"role": "assistant", "content": assistant_text})
         action = parse_action(assistant_text)
@@ -415,7 +386,6 @@ def run_task(
         service     = action.get("service", "api-gateway")
         action_str  = f"{action_type}('{service}')"
 
-        # Execute action
         error_msg = None
         try:
             obs, done, reward = env_client.step(action_type, service)
@@ -432,9 +402,8 @@ def run_task(
         if done:
             break
 
-        time.sleep(1.0)  # rate limit buffer for HF free tier
+        time.sleep(1.0)  # rate limit buffer
 
-        # Auto-declare when root service is healthy (agent forgot to declare)
         if not done and _should_auto_declare(task_id, obs):
             obs, done, reward = env_client.step("declare_resolved", "resolved")
             rewards.append(reward)
@@ -442,7 +411,6 @@ def run_task(
             log_step(step=steps_taken, action="declare_resolved('resolved')", reward=reward, done=done, error=None)
             break
 
-    # Get grader score
     try:
         score = env_client.get_grader_score(task_id)
         success = score >= 0.1
@@ -461,33 +429,41 @@ def run_task(
 
 def run_all_tasks(env_url: str = ENV_BASE_URL) -> dict:
     """Run the agent on all 6 tasks. Returns scores dict. Never crashes."""
-    llm_client  = None
-    groq_client = None
+
+    # Build client priority list: HF → Groq key 1 → Groq key 2 → expert
+    hf_client    = None
+    groq_client1 = None
+    groq_client2 = None
 
     try:
-        llm_client = create_llm_client()
+        hf_client = create_hf_client()
     except Exception:
         pass
 
     try:
-        groq_client = create_groq_client()
+        groq_client1 = create_groq_client(GROQ_API_KEY)
     except Exception:
         pass
 
-    # Prefer Groq as primary (generous free tier); HF as secondary
-    if groq_client is not None:
-        primary_client, primary_model = groq_client, GROQ_MODEL
-        backup_client,  backup_model  = llm_client, MODEL_NAME
-    else:
-        primary_client, primary_model = llm_client, MODEL_NAME
-        backup_client,  backup_model  = None, ""
+    try:
+        groq_client2 = create_groq_client(GROQ_API_KEY_2)
+    except Exception:
+        pass
 
-    if primary_client is None:
+    # Priority order: HF → Groq1 → Groq2 (expert is implicit final fallback)
+    clients = [
+        (hf_client,    MODEL_NAME),
+        (groq_client1, GROQ_MODEL),
+        (groq_client2, GROQ_MODEL),
+    ]
+
+    live = [(c, m) for c, m in clients if c is not None]
+    if not live:
         print("[INFO] No LLM credentials — running deterministic expert policy", flush=True)
     else:
-        print(f"[INFO] Primary LLM: {primary_model}", flush=True)
-        if backup_client:
-            print(f"[INFO] Backup LLM:  {backup_model}", flush=True)
+        for i, (_, m) in enumerate(live):
+            label = "Primary" if i == 0 else f"Fallback {i}"
+            print(f"[INFO] {label}: {m}", flush=True)
 
     scores = {}
     with ProdWatchdogClient(env_url) as env_client:
@@ -495,7 +471,7 @@ def run_all_tasks(env_url: str = ENV_BASE_URL) -> dict:
             if i > 0:
                 time.sleep(2)  # inter-task cooldown
             try:
-                score = run_task(task_id, primary_client, primary_model, backup_client, backup_model, env_client)
+                score = run_task(task_id, clients, env_client)
                 scores[task_id] = score
             except Exception as e:
                 print(f"  [ERROR] task={task_id} error={e}", flush=True)
@@ -504,6 +480,7 @@ def run_all_tasks(env_url: str = ENV_BASE_URL) -> dict:
     avg = sum(scores.values()) / len(scores) if scores else 0.0
     print(f"\n[SUMMARY] scores={scores} average={avg:.3f}", flush=True)
     return scores
+
 
 if __name__ == "__main__":
     run_all_tasks()
