@@ -18,17 +18,6 @@ tags:
   - real-world
 
 tasks:
-  - id: task1
-    name: Redis Cache OOM — Thundering Herd
-    difficulty: medium
-    description: >
-      redis-cache has hit memory OOM (100% utilization), causing 100% cache miss rate.
-      Every request hits the DB directly (thundering herd). api-gateway shows high error rate
-      and latency — this is a downstream symptom, not the root. Scale up redis-cache.
-      Cascade: nginx-lb starts dropping connections at step 6 if not fixed.
-    grader: grader_task1
-    max_steps: 12
-
   - id: task2
     name: nginx-lb Bad Config Deploy
     difficulty: easy
@@ -52,16 +41,16 @@ tasks:
     grader: grader_task3
     max_steps: 15
 
-  - id: task4
-    name: Postgres Replica WAL Corruption
-    difficulty: hard
+  - id: task1
+    name: Redis Cache OOM — Thundering Herd
+    difficulty: medium
     description: >
-      postgres-replica has a corrupted WAL segment after an OS-level force stop.
-      inventory-service reads are all failing. order-service cannot verify stock availability.
-      Red herring: postgres-primary shows high CPU (it is absorbing fallback read traffic, not the root).
-      Cascade: order-service goes down at step 9.
-    grader: grader_task4
-    max_steps: 15
+      redis-cache has hit memory OOM (100% utilization), causing 100% cache miss rate.
+      Every request hits the DB directly (thundering herd). api-gateway shows high error rate
+      and latency — this is a downstream symptom, not the root. Scale up redis-cache.
+      Cascade: nginx-lb starts dropping connections at step 6 if not fixed.
+    grader: grader_task1
+    max_steps: 12
 
   - id: task5
     name: Auth Service JWT Memory Leak
@@ -74,6 +63,17 @@ tasks:
       Cascade: order-service degrades at step 8, auth-service crashes at step 14.
     grader: grader_task5
     max_steps: 20
+
+  - id: task4
+    name: Postgres Replica WAL Corruption
+    difficulty: hard
+    description: >
+      postgres-replica has a corrupted WAL segment after an OS-level force stop.
+      inventory-service reads are all failing. order-service cannot verify stock availability.
+      Red herring: postgres-primary shows high CPU (it is absorbing fallback read traffic, not the root).
+      Cascade: order-service goes down at step 9.
+    grader: grader_task4
+    max_steps: 15
 
   - id: task6
     name: Postgres Primary Split-Brain

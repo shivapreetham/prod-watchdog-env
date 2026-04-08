@@ -76,26 +76,31 @@ def list_tasks():
     Returns the list of available tasks with their descriptions,
     difficulty levels, and the action schema (fields required for a step).
     """
+    DIFFICULTY = {
+        "task2": "easy",
+        "task3": "easy",
+        "task1": "medium",
+        "task5": "medium",
+        "task4": "hard",
+        "task6": "hard",
+    }
+    NAMES = {
+        "task1": "Redis Cache OOM — Thundering Herd",
+        "task2": "nginx-lb Bad Config Deploy",
+        "task3": "Kafka Broker Partition Failure",
+        "task4": "Postgres Replica WAL Corruption",
+        "task5": "Auth Service JWT Memory Leak",
+        "task6": "Postgres Primary Split-Brain",
+    }
+    ORDER = ["task2", "task3", "task1", "task5", "task4", "task6"]
+
     tasks = []
-    for task_id, scenario in SCENARIOS.items():
+    for task_id in ORDER:
+        scenario = SCENARIOS[task_id]
         tasks.append({
             "id": task_id,
-            "name": {
-                "task1": "Redis Cache OOM — Thundering Herd",
-                "task2": "nginx-lb Bad Config Deploy",
-                "task3": "Kafka Broker Partition Failure",
-                "task4": "Postgres Replica WAL Corruption",
-                "task5": "Auth Service JWT Memory Leak",
-                "task6": "Postgres Primary Split-Brain",
-            }.get(task_id, task_id),
-            "difficulty": {
-                "task1": "medium",
-                "task2": "easy",
-                "task3": "easy",
-                "task4": "hard",
-                "task5": "medium",
-                "task6": "hard",
-            }.get(task_id, "unknown"),
+            "name": NAMES.get(task_id, task_id),
+            "difficulty": DIFFICULTY.get(task_id, "unknown"),
             "description": scenario["description"],
             "max_steps": scenario["max_steps"],
             "grader": f"grader_{task_id}",
