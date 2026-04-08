@@ -1058,7 +1058,7 @@ class ProdWatchdogEnvironment(Environment):
         health_before = _compute_potential(health)
 
         result, reward_val, done = _process_action(
-            action_type, service, scenario, health, circuit_breakers, step_count
+            action_type, service, scenario, health, circuit_breakers, step_count, max_steps
         )
 
         # Potential-based shaping: dense reward signal every step
@@ -1139,6 +1139,7 @@ def _process_action(
     health:           dict,
     circuit_breakers: list,
     step_count:       int,
+    max_steps:        int = 20,
 ) -> tuple:
     """Returns (result_text, reward_value, done). Shaping and step penalty applied in step()."""
 
