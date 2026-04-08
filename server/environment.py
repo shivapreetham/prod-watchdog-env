@@ -1018,6 +1018,7 @@ class ProdWatchdogEnvironment(Environment):
         _EPISODE_STATE["resolution_claim"] = None
         _EPISODE_STATE["episode_id"]       = ep_id
         _EPISODE_STATE["primary_fixed"]    = False
+        _EPISODE_STATE["log_cursor"]       = {}
 
         self._state = State(episode_id=ep_id, step_count=0)
         alerts = _compute_alerts(scenario, _EPISODE_STATE["service_health"])
