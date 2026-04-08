@@ -1534,7 +1534,7 @@ def _get_log_slice(service: str, full_log: str, chunk_size: int = 4) -> str:
 
     return "\n".join(new_lines)
 # ---------------------------------------------------------------------------
-# Task graders — deterministic, scores vary 0.10–1.00 based on agent quality
+# Task graders — deterministic, scores vary 0.05–0.99 based on agent quality
 # ---------------------------------------------------------------------------
 
 def grader_task1(episode_history: list) -> float:
@@ -1547,7 +1547,7 @@ def grader_task1(episode_history: list) -> float:
     E(0.15): efficiency ≤4=1.0, ≥12=0.0
     """
     if not episode_history:
-        return 0.0
+        return 0.05
 
     investigate = {"query_logs", "check_metrics"}
 
@@ -1570,7 +1570,7 @@ def grader_task1(episode_history: list) -> float:
     fix_score = 0.25 if correct_fix else (0.10 if partial_fix else 0.0)
 
     final_health = episode_history[-1]["observation"]["service_health"]
-    redis_fixed   = float(final_health.get("redis-cache") == "healthy")
+    redis_fixed    = float(final_health.get("redis-cache") == "healthy")
     nginx_not_down = float(final_health.get("nginx-lb") != "down")
     state_score = 0.15 * redis_fixed + 0.05 * nginx_not_down
 
@@ -1584,7 +1584,7 @@ def grader_task1(episode_history: list) -> float:
         + state_score
         + 0.15 * efficiency
     )
-    return round(min(score, 1.0), 4)
+    return round(max(0.05, min(score, 0.99)), 4)
 
 
 def grader_task2(episode_history: list) -> float:
@@ -1596,7 +1596,7 @@ def grader_task2(episode_history: list) -> float:
     D(0.20): final state: nginx-lb + api-gateway both healthy
     """
     if not episode_history:
-        return 0.0
+        return 0.05
 
     investigate = {"query_logs", "check_metrics"}
 
@@ -1631,7 +1631,7 @@ def grader_task2(episode_history: list) -> float:
         + 0.30 * float(correct_fix)
         + state_score
     )
-    return round(min(score, 1.0), 4)
+    return round(max(0.05, min(score, 0.99)), 4)
 
 
 def grader_task3(episode_history: list) -> float:
@@ -1644,7 +1644,7 @@ def grader_task3(episode_history: list) -> float:
     E(0.15): efficiency ≤5=1.0, ≥15=0.0
     """
     if not episode_history:
-        return 0.0
+        return 0.05
 
     investigate = {"query_logs", "check_metrics"}
 
@@ -1687,7 +1687,7 @@ def grader_task3(episode_history: list) -> float:
         + state_score
         + 0.15 * efficiency
     )
-    return round(min(score, 1.0), 4)
+    return round(max(0.05, min(score, 0.99)), 4)
 
 
 def grader_task4(episode_history: list) -> float:
@@ -1700,7 +1700,7 @@ def grader_task4(episode_history: list) -> float:
     E(0.10): efficiency ≤5=1.0, ≥15=0.0
     """
     if not episode_history:
-        return 0.0
+        return 0.05
 
     investigate = {"query_logs", "check_metrics"}
 
@@ -1735,7 +1735,7 @@ def grader_task4(episode_history: list) -> float:
         + state_score
         + 0.10 * efficiency
     )
-    return round(min(score, 1.0), 4)
+    return round(max(0.05, min(score, 0.99)), 4)
 
 
 def grader_task5(episode_history: list) -> float:
@@ -1748,7 +1748,7 @@ def grader_task5(episode_history: list) -> float:
     E(0.10): efficiency ≤6=1.0, ≥20=0.0
     """
     if not episode_history:
-        return 0.0
+        return 0.05
 
     investigate = {"query_logs", "check_metrics"}
 
@@ -1783,7 +1783,7 @@ def grader_task5(episode_history: list) -> float:
         + state_score
         + 0.10 * efficiency
     )
-    return round(min(score, 1.0), 4)
+    return round(max(0.05, min(score, 0.99)), 4)
 
 
 def grader_task6(episode_history: list) -> float:
@@ -1797,7 +1797,7 @@ def grader_task6(episode_history: list) -> float:
     F(0.10): efficiency ≤7=1.0, ≥25=0.0
     """
     if not episode_history:
-        return 0.0
+        return 0.05
 
     investigate = {"query_logs", "check_metrics"}
 
@@ -1869,7 +1869,7 @@ def grader_task6(episode_history: list) -> float:
         + state_score
         + 0.10 * efficiency
     )
-    return round(min(score, 1.0), 4)
+    return round(max(0.05, min(score, 0.99)), 4)
 
 
 TASK_GRADERS = {
