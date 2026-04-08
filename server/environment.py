@@ -179,13 +179,13 @@ SCENARIOS = {
                 "[WARN]  Memory growth: +2.1GB over last 4h — session key TTL leak\n"
                 "[ERROR] Cache hit rate dropped from 94% → 0% over 15 minutes\n"
                 "[INFO]  Connected clients: 847 — all experiencing OOM errors\n"
-                "[INFO]  Fix: scale_up redis-cache to increase memory allocation\n"
+                "[INFO]  Memory limit: 8192MB (set in redis.conf maxmemory)\n"
             ),
             "api-gateway": (
                 "[WARN] redis-cache: all reads returning ERR OOM — falling back to DB\n"
                 "[WARN] Backend DB query rate: 94,000 req/min (normal with cache: 8,200 req/min)\n"
                 "[WARN] p99 latency 4200ms — all requests hitting DB directly\n"
-                "[INFO] api-gateway config unchanged — upstream cache dependency issue\n"
+                "[INFO] api-gateway config unchanged — last deploy 12 days ago\n"
                 "[INFO] auth-service: responding normally (has local token cache)\n"
             ),
             "nginx-lb": (
@@ -272,7 +272,7 @@ SCENARIOS = {
         },
 
         "static_alerts": [
-            "WARNING  [api-gateway] 5xx error rate: 94% — appears to be gateway failure (it is NOT)",
+            "CRITICAL [api-gateway] 5xx error rate: 94% — all upstream requests failing",
             "INFO     [nginx-lb] Config deploy triggered at 2026-04-07T08:14Z by CI pipeline (commit a3f91b2)",
         ],
 
@@ -283,15 +283,14 @@ SCENARIOS = {
                 "[ERROR] Directive 'worker_connections' set to 4 (was 4096 in previous config)\n"
                 "[ERROR] nginx: [warn] worker_rlimit_nofile is unset — using kernel default\n"
                 "[INFO]  Config deploy at 2026-04-07T08:14Z — commit a3f91b2 'update nginx worker config'\n"
-                "[INFO]  Previous stable config: worker_connections 4096 (commit 7de22a1)\n"
-                "[INFO]  Fix: rollback_deploy nginx-lb to revert to commit 7de22a1\n"
+                "[INFO]  Previous config: worker_connections 4096 (commit 7de22a1, deployed 30 days ago)\n"
             ),
             "api-gateway": (
                 "[ERROR] ECONNRESET: nginx-lb upstream connection reset on 99% of requests\n"
                 "[ERROR] Upstream keepalive pool exhausted — all slots occupied by reset connections\n"
-                "[INFO]  api-gateway process is healthy — issue is the upstream nginx-lb\n"
-                "[INFO]  Internal health check (bypass nginx): api-gateway returns 200 OK\n"
-                "[INFO]  All backend services (auth, order, payment) responding normally\n"
+                "[ERROR] 5xx error rate: 94% — upstream connection failures\n"
+                "[WARN]  api-gateway config last changed 12 days ago — no recent deploys\n"
+                "[INFO]  All backend services (auth, order, payment) responding on internal health checks\n"
             ),
             "auth-service":     "[INFO] All systems nominal. Internal health OK. 200 rate: 99.9%.\n",
             "order-service":    "[INFO] Processing normally. No errors. DB connections healthy.\n",
@@ -352,7 +351,7 @@ SCENARIOS = {
 
         "cascade_events": [
             {
-                "at_step": 8, "target": "order-service", "new_status": "down",
+                "at_step": 6, "target": "order-service", "new_status": "down",
                 "message": (
                     "[CASCADE] kafka-broker still down — order-service local producer buffer full (2GB). "
                     "New orders now being rejected. order-service entering error state."
@@ -409,7 +408,6 @@ SCENARIOS = {
                 "[ERROR] Controller removed broker from ISR — epoch mismatch after GC\n"
                 "[WARN]  JVM heap: 28GB / 30GB — GC pressure from large in-memory message index\n"
                 "[WARN]  Broker uptime: 42 days — JVM heap fragmented over long run\n"
-                "[INFO]  Fix: restart kafka-broker to rejoin cluster and trigger new leader election\n"
                 "[INFO]  kafka-broker-2 and kafka-broker-3 healthy but cannot elect leaders without broker-1\n"
             ),
             "order-service": (
@@ -424,9 +422,9 @@ SCENARIOS = {
                 "[WARN] KafkaConsumer: poll() returning 0 records for 847 consecutive calls\n"
                 "[WARN] Consumer group 'notification-consumers' lag: 847,293 messages pending\n"
                 "[WARN] Broker connection lost: kafka-broker-1:9092 — UNREACHABLE\n"
-                "[INFO] notification-service itself is healthy — waiting for broker to recover\n"
+                "[ERROR] Consumer group coordinator unavailable — group rebalancing stalled\n"
+                "[WARN] Unprocessed notification backlog growing: estimated SLA breach in 8 min\n"
                 "[INFO] No independent DB or external dependencies — purely Kafka-driven\n"
-                "[INFO] Once kafka-broker restarts, consumer will auto-resume from last committed offset\n"
             ),
             "api-gateway":      "[INFO] Routing normally. All upstreams responding. No anomalies.\n",
             "nginx-lb":         "[INFO] Connections nominal. No upstream errors.\n",
@@ -486,7 +484,7 @@ SCENARIOS = {
 
         "cascade_events": [
             {
-                "at_step": 9, "target": "order-service", "new_status": "down",
+                "at_step": 7, "target": "order-service", "new_status": "down",
                 "message": (
                     "[CASCADE] postgres-replica still down — inventory-service stock checks fully failing. "
                     "order-service cannot place any orders — service down."
@@ -530,15 +528,13 @@ SCENARIOS = {
                 "[ERROR] Crash recovery failed — corrupt WAL segment cannot be replayed\n"
                 "[ERROR] All connections rejected: FATAL database system is in crash recovery mode\n"
                 "[WARN]  Force-stopped during OS kernel upgrade at 2026-04-07T06:30Z\n"
-                "[INFO]  postgres-primary is healthy — re-sync estimated 45 seconds after restart\n"
-                "[INFO]  Fix: restart postgres-replica to clear bad WAL buffer and re-sync from primary\n"
+                "[INFO]  Last successful replication: 2026-04-07T06:29Z (1 min before force stop)\n"
             ),
             "postgres-primary": (
                 "[WARN]  Unusual read traffic: 89 connections (normal write workload: 12)\n"
-                "[WARN]  Connection pool 94% utilized — inventory-service read fallback traffic\n"
+                "[WARN]  Connection pool 94% utilized — far above normal baseline of 12 write connections\n"
+                "[WARN]  CPU 87% — sustained high load for past 2 hours\n"
                 "[INFO]  Write performance: nominal. No errors on write path.\n"
-                "[INFO]  postgres-primary is healthy — elevated load is from inventory read fallback\n"
-                "[INFO]  Root issue is postgres-replica WAL corruption — fix the replica\n"
             ),
             "inventory-service": (
                 "[ERROR] DB connection failed: postgres-replica:5432 — Connection refused\n"
@@ -612,7 +608,7 @@ SCENARIOS = {
 
         "cascade_events": [
             {
-                "at_step": 8, "target": "order-service", "new_status": "degraded",
+                "at_step": 6, "target": "order-service", "new_status": "degraded",
                 "message": (
                     "[CASCADE] auth-service GC pauses causing JWT validation timeouts. "
                     "order-service checkout auth failures now exceeding threshold."
@@ -673,16 +669,14 @@ SCENARIOS = {
                 "[ERROR] JVM heap: 18,432MB / 19,200MB (96%) — JWT validation cache not evicting\n"
                 "[ERROR] JWT cache entries: 142M objects — TTL eviction thread appears deadlocked\n"
                 "[WARN]  JWT validation avg latency: 4,100ms (SLA: 50ms) — all GC-paused\n"
-                "[WARN]  auth-service uptime: 7d 3h — heap leak accumulating since last restart\n"
-                "[INFO]  Fix: restart auth-service to clear JVM heap and reset JWT cache\n"
-                "[INFO]  After restart, expected: heap <2GB, latency <50ms, GC pauses <10ms\n"
+                "[WARN]  auth-service uptime: 7d 3h — heap growing since last restart\n"
+                "[INFO]  Thread dump shows 847 threads blocked on GC safepoint\n"
             ),
             "api-gateway": (
                 "[ERROR] auth-service upstream: 34% requests timing out after 4s\n"
-                "[ERROR] Retry storm: 4,200 in-flight retry attempts — CPU elevated\n"
-                "[INFO]  api-gateway config unchanged — issue is auth-service upstream\n"
-                "[INFO]  scale_up api-gateway will NOT help — bottleneck is auth latency, not api capacity\n"
-                "[WARN]  enable_circuit_breaker on api-gateway will stop retry storm while auth restarts\n"
+                "[ERROR] Retry storm: 4,200 in-flight retry attempts — CPU 78%\n"
+                "[WARN]  api-gateway CPU elevated — correlates with retry backlog growth\n"
+                "[WARN]  api-gateway config last changed 12 days ago — no recent deploys\n"
             ),
             "order-service": (
                 "[WARN] JWT token validation timing out: avg 4.1s on 28% of checkout requests\n"
@@ -754,7 +748,7 @@ SCENARIOS = {
 
         "cascade_events": [
             {
-                "at_step": 7, "target": "inventory-service", "new_status": "degraded",
+                "at_step": 5, "target": "inventory-service", "new_status": "degraded",
                 "message": (
                     "[CASCADE] postgres-replica overloaded — now handling both reads AND writes "
                     "(split-brain write traffic routed here). inventory-service read queries degraded."
@@ -821,8 +815,8 @@ SCENARIOS = {
         },
 
         "static_alerts": [
-            "WARNING  [auth-service] JWT errors 23% — LOOKS like key rotation issue (it is NOT)",
-            "WARNING  [order-service] Memory +180MB/hr — LOOKS like memory leak (it is write-retry accumulation)",
+            "WARNING  [auth-service] JWT signature validation failing — 23% of new logins rejected",
+            "WARNING  [order-service] Memory growing +180MB/hr — possible leak or retry accumulation",
             "INFO     [postgres-primary] STONITH fencing at 2026-04-07T03:14Z — disk was 100%",
         ],
 
@@ -831,17 +825,16 @@ SCENARIOS = {
                 "[ERROR] PostgreSQL OOM-killed — disk at 100% (500GB / 500GB)\n"
                 "[ERROR] Failed to write WAL segment — disk full, aborting all transactions\n"
                 "[INFO]  Auto-failover triggered at 2026-04-07T03:14:22Z by Patroni HA manager\n"
-                "[INFO]  postgres-replica promoted by Patroni\n"
-                "[WARN]  Promotion incomplete — postgresql.conf still has 'default_transaction_read_only=on'\n"
-                "[INFO]  Fix: rollback_deploy postgres-primary to restore from snapshot (2h ago, 450GB)\n"
+                "[INFO]  postgres-replica promoted by Patroni at 03:14:31Z\n"
+                "[INFO]  Last snapshot available: 2026-04-07T01:10Z (450GB, 2h ago)\n"
             ),
             "postgres-replica": (
                 "[ERROR] Rejecting write: ERROR: cannot execute INSERT in a read-only transaction\n"
                 "[ERROR] Rejecting write: ERROR: cannot execute UPDATE in a read-only transaction\n"
-                "[WARN]  Promoted as primary but read-only config was NOT cleared\n"
+                "[WARN]  Promoted as primary by Patroni but postgresql.conf was not reloaded\n"
                 "[WARN]  Split-brain: applications routing writes here AND to dead primary\n"
-                "[INFO]  Read queries: serving normally. 6 connections active.\n"
-                "[INFO]  promote_replica will NOT help — this node is already promoted but still read-only\n"
+                "[INFO]  Read queries: serving normally. 89 connections active.\n"
+                "[INFO]  postgresql.conf: default_transaction_read_only = on (Patroni did not clear)\n"
             ),
             "payment-service": (
                 "[ERROR] ReadOnlyDatabaseException: cannot execute transaction — database is read-only\n"
@@ -862,7 +855,7 @@ SCENARIOS = {
                 "[WARN] Session write failed: ReadOnlyDatabaseException at auth-db → postgres-replica\n"
                 "[WARN] 23% of login attempts failing — cannot persist session token\n"
                 "[INFO] JWT validation for existing tokens still working (reads only)\n"
-                "[WARN] LOOKS like JWT key issue but is actually DB write rejection — check postgres\n"
+                "[WARN] JWT key rotation was deployed 4 hours ago — possible key mismatch with clients\n"
             ),
             "inventory-service": (
                 "[INFO] Reading stock levels from postgres-replica — queries succeeding but slow\n"
@@ -1579,7 +1572,7 @@ def grader_task1(episode_history: list) -> float:
     state_score = 0.15 * redis_fixed + 0.05 * nginx_not_down
 
     steps = len(episode_history)
-    efficiency = 1.0 if steps <= 4 else (0.0 if steps >= 12 else 1.0 - (steps - 4) / 8.0)
+    efficiency = 1.0 if steps <= 3 else (0.0 if steps >= 10 else 1.0 - (steps - 3) / 7.0)
 
     score = (
         0.25 * float(diagnosed_redis)
@@ -1627,13 +1620,17 @@ def grader_task2(episode_history: list) -> float:
     final_health = episode_history[-1]["observation"]["service_health"]
     lb_ok  = float(final_health.get("nginx-lb") == "healthy")
     gw_ok  = float(final_health.get("api-gateway") == "healthy")
-    state_score = 0.12 * lb_ok + 0.08 * gw_ok
+    state_score = 0.10 * lb_ok + 0.05 * gw_ok
+
+    steps = len(episode_history)
+    efficiency = 1.0 if steps <= 3 else (0.0 if steps >= 8 else 1.0 - (steps - 3) / 5.0)
 
     score = (
-        0.30 * float(diagnosed_lb)
-        + 0.20 * first_quality
-        + 0.30 * float(correct_fix)
+        0.25 * float(diagnosed_lb)
+        + 0.15 * first_quality
+        + 0.25 * float(correct_fix)
         + state_score
+        + 0.15 * efficiency
     )
     return round(max(0.05, min(score, 0.99)), 4)
 
@@ -1682,7 +1679,7 @@ def grader_task3(episode_history: list) -> float:
     state_score = 0.10 * kafka_ok + 0.06 * order_ok + 0.04 * notif_ok
 
     steps = len(episode_history)
-    efficiency = 1.0 if steps <= 5 else (0.0 if steps >= 15 else 1.0 - (steps - 5) / 10.0)
+    efficiency = 1.0 if steps <= 4 else (0.0 if steps >= 12 else 1.0 - (steps - 4) / 8.0)
 
     score = (
         0.20 * float(diagnosed_kafka)
@@ -1730,7 +1727,7 @@ def grader_task4(episode_history: list) -> float:
     state_score = 0.12 * replica_ok + 0.08 * inv_ok
 
     steps = len(episode_history)
-    efficiency = 1.0 if steps <= 5 else (0.0 if steps >= 15 else 1.0 - (steps - 5) / 10.0)
+    efficiency = 1.0 if steps <= 4 else (0.0 if steps >= 12 else 1.0 - (steps - 4) / 8.0)
 
     score = (
         0.25 * float(diagnosed_replica)
@@ -1778,7 +1775,7 @@ def grader_task5(episode_history: list) -> float:
     state_score = 0.08 * auth_ok + 0.04 * order_ok + 0.03 * payment_ok
 
     steps = len(episode_history)
-    efficiency = 1.0 if steps <= 6 else (0.0 if steps >= 20 else 1.0 - (steps - 6) / 14.0)
+    efficiency = 1.0 if steps <= 5 else (0.0 if steps >= 15 else 1.0 - (steps - 5) / 10.0)
 
     score = (
         0.25 * float(diagnosed_auth)
@@ -1863,7 +1860,7 @@ def grader_task6(episode_history: list) -> float:
     state_score = 0.06 * pg_ok + 0.04 * pay_ok
 
     steps = len(episode_history)
-    efficiency = 1.0 if steps <= 7 else (0.0 if steps >= 25 else 1.0 - (steps - 7) / 18.0)
+    efficiency = 1.0 if steps <= 6 else (0.0 if steps >= 20 else 1.0 - (steps - 6) / 14.0)
 
     score = (
         0.20 * postgres_inv_score
