@@ -1117,9 +1117,14 @@ class ProdWatchdogEnvironment(Environment):
 
     @property
     def state(self) -> State:
+        history = _EPISODE_STATE.get("episode_history", [])
+        last = history[-1] if history else None
         return State(
             episode_id=_EPISODE_STATE.get("episode_id"),
             step_count=_EPISODE_STATE.get("step_count", 0),
+            observation=last["observation"] if last else {},
+            reward=last["reward"] if last else 0.0,
+            done=_EPISODE_STATE.get("resolved", False),
         )
 
 

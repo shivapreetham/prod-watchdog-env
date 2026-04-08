@@ -37,8 +37,11 @@ from typing import Optional, List
 from openai import OpenAI
 
 from client import ProdWatchdogClient
-from dotenv import load_dotenv
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 # ---------------------------------------------------------------------------
 # Config from environment variables
