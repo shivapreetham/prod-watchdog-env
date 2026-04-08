@@ -1141,12 +1141,15 @@ def _process_action(
     fix_action   = scenario["fix_action"]
     task_id      = _EPISODE_STATE["task_id"]
 
+    max_steps = scenario["max_steps"]
+
     # ---- QUERY LOGS ----
     if action_type == "query_logs":
         if not service or service not in health:
             return "[ERROR] Specify a valid service name for query_logs.", -0.1, False
 
-        logs = scenario["logs"].get(service, "[INFO] No unusual log entries.\n")
+        base_log = scenario["logs"].get(service, "[INFO] No unusual log entries.\n")
+        logs = _enrich_log(base_log, service, step_count, max_steps, health)
 
         if service in _EPISODE_STATE["services_queried"]:
             reward = 0.0
@@ -1157,14 +1160,15 @@ def _process_action(
             reward = -0.05
             _EPISODE_STATE["services_queried"].append(service)
 
-        return f"[LOGS {service}]\n{logs}", reward, False
+        return logs, reward, False
 
     # ---- CHECK METRICS ----
     elif action_type == "check_metrics":
         if not service or service not in health:
             return "[ERROR] Specify a valid service name for check_metrics.", -0.1, False
 
-        metrics = scenario["metrics"].get(service, "cpu=5% | memory=20% | error_rate=0%")
+        base_metrics = scenario["metrics"].get(service, "cpu=5% | memory=20% | error_rate=0%")
+        metrics = _enrich_metrics(base_metrics, service, step_count, max_steps, health)
         key = f"metrics:{service}"
 
         if key in _EPISODE_STATE["services_queried"]:
@@ -1176,7 +1180,7 @@ def _process_action(
             reward = -0.05
             _EPISODE_STATE["services_queried"].append(key)
 
-        return f"[METRICS {service}] {metrics}", reward, False
+        return metrics, reward, False
 
     # ---- RESTART SERVICE ----
     elif action_type == "restart_service":
@@ -1384,6 +1388,65 @@ def _heal_downstream(service: str, health: dict, circuit_breakers: list):
         if dependent not in circuit_breakers and health.get(dependent) in ("degraded", "down"):
             health[dependent] = "healthy"
             _heal_downstream(dependent, health, circuit_breakers)
+
+
+# ---------------------------------------------------------------------------
+# Dynamic log/metrics enrichment — observations change with incident state
+# ---------------------------------------------------------------------------
+
+_URGENCY_PREFIXES = [
+    "",                         # steps 1-3: no urgency header
+    "[ESCALATING] ",            # steps 4-6
+    "[HIGH URGENCY] ",          # steps 7-10
+    "[CRITICAL — CASCADE ACTIVE] ",  # steps 11+
+]
+
+def _urgency_prefix(step: int, max_steps: int) -> str:
+    frac = step / max(max_steps, 1)
+    if frac < 0.25:
+        return _URGENCY_PREFIXES[0]
+    elif frac < 0.5:
+        return _URGENCY_PREFIXES[1]
+    elif frac < 0.75:
+        return _URGENCY_PREFIXES[2]
+    return _URGENCY_PREFIXES[3]
+
+
+def _enrich_log(base_log: str, service: str, step: int, max_steps: int, health: dict) -> str:
+    """
+    Wrap a static log string with dynamic context:
+    - Incident step counter (time pressure)
+    - Cascade damage summary (which services have fallen since incident start)
+    - Urgency level based on step fraction
+    """
+    prefix = _urgency_prefix(step, max_steps)
+    header = f"=== {prefix}LOGS: {service} | incident step {step}/{max_steps} ===\n"
+
+    # Show services that have cascaded down/degraded (snapshot of collateral damage)
+    cascade_now = [
+        svc for svc, st in health.items()
+        if st in ("down", "degraded") and svc != service
+    ]
+    cascade_line = ""
+    if cascade_now:
+        cascade_line = f"[INCIDENT STATUS] Affected services: {', '.join(cascade_now)}\n"
+
+    return header + cascade_line + base_log
+
+
+def _enrich_metrics(base_metrics: str, service: str, step: int, max_steps: int, health: dict) -> str:
+    """
+    Wrap static metric string with dynamic context matching incident progression.
+    Numeric values for cascaded services show degradation (not fake precision —
+    just step-count offsets on top of base to show trend).
+    """
+    prefix = _urgency_prefix(step, max_steps)
+    header = f"=== {prefix}METRICS: {service} | step {step}/{max_steps} ===\n"
+
+    svc_status = health.get(service, "healthy")
+    status_line = f"[SERVICE STATUS] {service}: {svc_status.upper()}\n"
+
+    return header + status_line + base_metrics
 
 
 # ---------------------------------------------------------------------------
