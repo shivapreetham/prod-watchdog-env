@@ -1146,7 +1146,10 @@ def _process_action(
         if not service or service not in health:
             return "[ERROR] Specify a valid service name for query_logs.", -0.1, False
 
-        logs = scenario["logs"].get(service, "[INFO] No unusual log entries.\n")
+        base_log = scenario["logs"].get(service, "[INFO] No unusual log entries.\n")
+        base_log = _mutate_log(base_log, service, step_count, health, scenario)
+        full_log = _enrich_log(base_log, service, step_count, max_steps, health)
+        logs = _get_log_slice(service, full_log)
 
         if service in _EPISODE_STATE["services_queried"]:
             reward = 0.0
@@ -1157,14 +1160,15 @@ def _process_action(
             reward = -0.05
             _EPISODE_STATE["services_queried"].append(service)
 
-        return f"[LOGS {service}]\n{logs}", reward, False
+        return logs, reward, False
 
     # ---- CHECK METRICS ----
     elif action_type == "check_metrics":
         if not service or service not in health:
             return "[ERROR] Specify a valid service name for check_metrics.", -0.1, False
 
-        metrics = scenario["metrics"].get(service, "cpu=5% | memory=20% | error_rate=0%")
+        base_metrics = scenario["metrics"].get(service, "cpu=5% | memory=20% | error_rate=0%")
+        metrics = _enrich_metrics(base_metrics, service, step_count, max_steps, health)
         key = f"metrics:{service}"
 
         if key in _EPISODE_STATE["services_queried"]:
@@ -1176,7 +1180,7 @@ def _process_action(
             reward = -0.05
             _EPISODE_STATE["services_queried"].append(key)
 
-        return f"[METRICS {service}] {metrics}", reward, False
+        return metrics, reward, False
 
     # ---- RESTART SERVICE ----
     elif action_type == "restart_service":
@@ -1390,7 +1394,131 @@ def _heal_downstream(service: str, health: dict, circuit_breakers: list):
 # Task graders — deterministic, scores vary 0.10–1.00 based on agent quality
 # ---------------------------------------------------------------------------
 
-def grader_task1(episode_history: list) -> float:
+_URGENCY_PREFIXES = [
+    "",                         # steps 1-3: no urgency header
+    "[ESCALATING] ",            # steps 4-6
+    "[HIGH URGENCY] ",          # steps 7-10
+    "[CRITICAL — CASCADE ACTIVE] ",  # steps 11+
+]
+
+def _urgency_prefix(step: int, max_steps: int) -> str:
+    frac = step / max(max_steps, 1)
+    if frac < 0.25:
+        return _URGENCY_PREFIXES[0]
+    elif frac < 0.5:
+        return _URGENCY_PREFIXES[1]
+    elif frac < 0.75:
+        return _URGENCY_PREFIXES[2]
+    return _URGENCY_PREFIXES[3]
+
+
+def _enrich_log(base_log: str, service: str, step: int, max_steps: int, health: dict) -> str:
+    """
+    Wrap a static log string with dynamic context:
+    - Incident step counter (time pressure)
+    - Cascade damage summary (which services have fallen since incident start)
+    - Urgency level based on step fraction
+    """
+    prefix = _urgency_prefix(step, max_steps)
+    header = f"=== {prefix}LOGS: {service} | incident step {step}/{max_steps} ===\n"
+
+    # Show services that have cascaded down/degraded (snapshot of collateral damage)
+    cascade_now = [
+        svc for svc, st in health.items()
+        if st in ("down", "degraded") and svc != service
+    ]
+    cascade_line = ""
+    if cascade_now:
+        cascade_line = f"[INCIDENT STATUS] Affected services: {', '.join(cascade_now)}\n"
+
+    return header + cascade_line + base_log
+
+
+def _enrich_metrics(base_metrics: str, service: str, step: int, max_steps: int, health: dict) -> str:
+    """
+    Wrap static metric string with dynamic context matching incident progression.
+    Numeric values for cascaded services show degradation (not fake precision —
+    just step-count offsets on top of base to show trend).
+    """
+    prefix = _urgency_prefix(step, max_steps)
+    header = f"=== {prefix}METRICS: {service} | step {step}/{max_steps} ===\n"
+
+    svc_status = health.get(service, "healthy")
+    status_line = f"[SERVICE STATUS] {service}: {svc_status.upper()}\n"
+
+    return header + status_line + base_metrics
+
+
+def _mutate_log(base_log: str, service: str, step: int, health: dict, scenario: dict) -> str:
+    """
+    Dynamically evolve logs based on incident progression and failure type.
+    """
+    root_type = scenario.get("root_cause_type")
+    additions = []
+
+    # ---- MEMORY OOM ----
+    if root_type == "memory_oom":
+        if service == "redis-cache":
+            if step >= 3:
+                additions.append("[WARN] memory nearing limit — eviction spikes")
+            if step >= 6:
+                additions.append("[ERROR] cache hit rate collapsing")
+            if step >= 8:
+                additions.append("[CRITICAL] OOM impacting all clients")
+
+        if service == "api-gateway" and health.get("redis-cache") != "healthy":
+            if step >= 5:
+                additions.append("[WARN] DB fallback traffic increasing")
+            if step >= 7:
+                additions.append("[ERROR] DB saturation due to cache miss storm")
+
+    # ---- BAD CONFIG ----
+    elif root_type == "bad_config_deploy":
+        if service == "nginx-lb":
+            if step >= 2:
+                additions.append("[ERROR] worker_connections misconfigured")
+            if step >= 5:
+                additions.append("[CRITICAL] connection rejection rate >95%")
+
+    # ---- KAFKA FAILURE ----
+    elif root_type == "partition_leader_failure":
+        if service == "kafka-broker":
+            if step >= 3:
+                additions.append("[WARN] leader election unstable")
+            if step >= 6:
+                additions.append("[ERROR] partitions without leader")
+
+    # ---- WAL CORRUPTION ----
+    elif root_type == "wal_corruption":
+        if service == "postgres-replica":
+            if step >= 3:
+                additions.append("[ERROR] WAL replay inconsistency detected")
+            if step >= 7:
+                additions.append("[CRITICAL] replica unusable")
+
+    # ---- MEMORY LEAK ----
+    elif root_type == "jwt_cache_memory_leak":
+        if service == "auth-service":
+            if step >= 4:
+                additions.append("[WARN] heap usage increasing rapidly")
+            if step >= 8:
+                additions.append("[ERROR] GC pauses affecting latency")
+
+    # ---- SPLIT BRAIN ----
+    elif root_type == "disk_full_split_brain":
+        if service == "postgres-primary":
+            if step >= 3:
+                additions.append("[ERROR] disk nearing capacity")
+            if step >= 6:
+                additions.append("[CRITICAL] writes failing — disk full")
+
+    if additions:
+        base_log += "\n" + "\n".join(additions)
+
+    return base_log
+
+
+def _get_log_slice(service: str, full_log: str, chunk_size: int = 4) -> str:
     """
     Redis Cache OOM — Thundering Herd.
     A(0.25): diagnosed redis-cache

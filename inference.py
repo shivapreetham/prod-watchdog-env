@@ -500,6 +500,5 @@ def run_all_tasks(env_url: str = ENV_BASE_URL) -> dict:
     print(f"\n[SUMMARY] scores={scores} average={avg:.3f}", flush=True)
     return scores
 
-
 if __name__ == "__main__":
     run_all_tasks()
