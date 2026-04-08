@@ -105,35 +105,34 @@ except Exception as e:
 section("Layer 1: Full episode flow (task1)")
 
 try:
-    r = httpx.post(f"{BASE_URL}/reset", json={"task_id": "task1"}, timeout=10)
-    assert r.status_code == 200, f"reset failed: {r.status_code}"
+    # Use a single persistent client to reuse the SSL connection across all steps
+    with httpx.Client(timeout=20) as client:
+        r = client.post(f"{BASE_URL}/reset", json={"task_id": "task1"})
+        assert r.status_code == 200, f"reset failed: {r.status_code}"
 
-    # Step 1: query_logs
-    r = httpx.post(f"{BASE_URL}/step",
-                   json={"action": {"action_type": "query_logs", "service": "redis-cache"}},
-                   timeout=10)
-    check("/step query_logs returns 200", r.status_code == 200, f"status={r.status_code}")
-    obs = r.json()
-    check("/step has 'reward' field",      "reward" in obs, str(list(obs.keys())))
-    check("/step has 'done' field",        "done" in obs)
-    check("/step has 'observation' or flat", "observation" in obs or "service_health" in obs)
-    reward1 = obs.get("reward", obs.get("observation", {}).get("reward", None))
-    check("/step reward is numeric",       isinstance(reward1, (int, float)), str(reward1))
+        # Step 1: query_logs
+        r = client.post(f"{BASE_URL}/step",
+                        json={"action": {"action_type": "query_logs", "service": "redis-cache"}})
+        check("/step query_logs returns 200", r.status_code == 200, f"status={r.status_code}")
+        obs = r.json()
+        check("/step has 'reward' field",      "reward" in obs, str(list(obs.keys())))
+        check("/step has 'done' field",        "done" in obs)
+        check("/step has 'observation' or flat", "observation" in obs or "service_health" in obs)
+        reward1 = obs.get("reward", obs.get("observation", {}).get("reward", None))
+        check("/step reward is numeric",       isinstance(reward1, (int, float)), str(reward1))
 
-    # Step 2: correct fix
-    r = httpx.post(f"{BASE_URL}/step",
-                   json={"action": {"action_type": "scale_up", "service": "redis-cache"}},
-                   timeout=10)
-    check("/step scale_up returns 200", r.status_code == 200)
+        # Step 2: correct fix
+        r = client.post(f"{BASE_URL}/step",
+                        json={"action": {"action_type": "scale_up", "service": "redis-cache"}})
+        check("/step scale_up returns 200", r.status_code == 200)
 
-    # Step 3: declare
-    r = httpx.post(f"{BASE_URL}/step",
-                   json={"action": {"action_type": "declare_resolved", "service": "redis-cache"}},
-                   timeout=10)
-    check("/step declare_resolved returns 200", r.status_code == 200)
-    obs = r.json()
-    done = obs.get("done", obs.get("observation", {}).get("done", False))
-    check("/step done=true after declare", done is True, f"done={done}")
+        # Step 3: declare
+        r = client.post(f"{BASE_URL}/step",
+                        json={"action": {"action_type": "declare_resolved", "service": "redis-cache"}})
+        check("/step declare_resolved returns 200", r.status_code == 200)
+        obs = r.json()
+        done = obs.get("done", obs.get("observation", {}).get("done", False))
+        check("/step done=true after declare", done is True, f"done={done}")
 
 except Exception as e:
     check("Full episode flow", False, str(e))
@@ -142,18 +141,19 @@ except Exception as e:
 section("Layer 1: Grader endpoint")
 
 try:
-    httpx.post(f"{BASE_URL}/reset", json={"task_id": "task1"}, timeout=10)
-    httpx.post(f"{BASE_URL}/step", json={"action": {"action_type": "query_logs", "service": "redis-cache"}}, timeout=10)
-    httpx.post(f"{BASE_URL}/step", json={"action": {"action_type": "scale_up", "service": "redis-cache"}}, timeout=10)
-    httpx.post(f"{BASE_URL}/step", json={"action": {"action_type": "declare_resolved", "service": "redis-cache"}}, timeout=10)
+    with httpx.Client(timeout=20) as client:
+        client.post(f"{BASE_URL}/reset", json={"task_id": "task1"})
+        client.post(f"{BASE_URL}/step", json={"action": {"action_type": "query_logs", "service": "redis-cache"}})
+        client.post(f"{BASE_URL}/step", json={"action": {"action_type": "scale_up", "service": "redis-cache"}})
+        client.post(f"{BASE_URL}/step", json={"action": {"action_type": "declare_resolved", "service": "redis-cache"}})
 
-    r = httpx.post(f"{BASE_URL}/grader?task_id=task1", timeout=15)
-    check("/grader returns 200", r.status_code == 200, f"status={r.status_code}")
-    data = r.json()
-    check("/grader has 'score'", "score" in data, str(data))
-    score = data.get("score", -1)
-    check("/grader score in [0.0, 1.0]", 0.0 <= score <= 1.0, f"score={score}")
-    check("/grader score > 0 for correct fix", score > 0.5, f"score={score}")
+        r = client.post(f"{BASE_URL}/grader?task_id=task1")
+        check("/grader returns 200", r.status_code == 200, f"status={r.status_code}")
+        data = r.json()
+        check("/grader has 'score'", "score" in data, str(data))
+        score = data.get("score", -1)
+        check("/grader score in [0.0, 1.0]", 0.0 <= score <= 1.0, f"score={score}")
+        check("/grader score > 0 for correct fix", score > 0.5, f"score={score}")
 except Exception as e:
     check("/grader endpoint", False, str(e))
 
