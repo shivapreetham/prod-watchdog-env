@@ -274,8 +274,8 @@ def _run_fallback_task(task_id: str, env_client: ProdWatchdogClient) -> float:
         env_client.reset(task_id)
     except Exception as e:
         error_msg = str(e)
-        log_end(success=False, steps=0, score=0.0, rewards=[])
-        return 0.0
+        log_end(success=False, steps=0, score=0.05, rewards=[])
+        return 0.05
 
     for i, action in enumerate(_FALLBACK_SEQUENCES.get(task_id, [])):
         try:
@@ -304,9 +304,10 @@ def _run_fallback_task(task_id: str, env_client: ProdWatchdogClient) -> float:
         score = env_client.get_grader_score(task_id)
         success = score >= 0.1
     except Exception:
-        score = 0.0
+        score = 0.05
         success = False
 
+    score = max(0.05, min(score, 0.99))
     log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
     return score
 
@@ -446,9 +447,10 @@ def run_task(
         score = env_client.get_grader_score(task_id)
         success = score >= 0.1
     except Exception:
-        score = 0.0
+        score = 0.05
         success = False
 
+    score = max(0.05, min(score, 0.99))
     log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
     return score
 
@@ -497,7 +499,7 @@ def run_all_tasks(env_url: str = ENV_BASE_URL) -> dict:
                 scores[task_id] = score
             except Exception as e:
                 print(f"  [ERROR] task={task_id} error={e}", flush=True)
-                scores[task_id] = 0.0
+                scores[task_id] = 0.05
 
     avg = sum(scores.values()) / len(scores) if scores else 0.0
     print(f"\n[SUMMARY] scores={scores} average={avg:.3f}", flush=True)
