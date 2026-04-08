@@ -469,12 +469,16 @@ def run_all_tasks(env_url: str = ENV_BASE_URL) -> dict:
     except Exception:
         pass
 
-    # Prefer Groq as primary (generous free tier); HF as secondary
-    if groq_client is not None:
-        primary_client, primary_model = groq_client, GROQ_MODEL
-        backup_client,  backup_model  = llm_client, MODEL_NAME
-    else:
+    # Primary: injected API_BASE_URL + MODEL_NAME + HF_TOKEN (evaluator's model)
+    # Backup:  Groq (GROQ_API_KEY) — only used if primary is rate-limited / fails
+    if llm_client is not None:
         primary_client, primary_model = llm_client, MODEL_NAME
+        backup_client,  backup_model  = groq_client, GROQ_MODEL
+    elif groq_client is not None:
+        primary_client, primary_model = groq_client, GROQ_MODEL
+        backup_client,  backup_model  = None, ""
+    else:
+        primary_client, primary_model = None, ""
         backup_client,  backup_model  = None, ""
 
     if primary_client is None:
