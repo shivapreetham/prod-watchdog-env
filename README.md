@@ -14,7 +14,9 @@ short_description: Production incident response SRE environment for OpenEnv
 
 An OpenEnv environment that simulates real on-call SRE (Site Reliability Engineering) work.
 An AI agent receives production alerts, investigates microservice failures using logs and metrics,
-contains blast radius using circuit breakers, and remediates the root cause.
+contains the blast radius using circuit breakers, and remediates the root cause.
+
+For a deeper system overview, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Built for the **Meta × Hugging Face OpenEnv Hackathon, Round 1 (2026)** by team **labwale**.
 
